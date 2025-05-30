@@ -2618,6 +2618,19 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             [[fallthrough]];
         }
 
+        case ArrayFilterIntrinsic: {
+            JSFunction* function = variant.function();
+            dataLogLn("bforward - DFG ArrayFilterIntrinsic: prediction=", prediction);
+            if (!function)
+                return CallOptimizationResult::DidNothing;
+            ArrayMode arrayMode = getArrayMode(Array::Action::Write);
+            dataLogLn("bforward - DFG ArrayFilterIntrinsic: arrayMode=", arrayMode);
+            if (!arrayMode.isJSArray())
+                return CallOptimizationResult::DidNothing;
+
+            return CallOptimizationResult::DidNothing; // TODO
+        }
+
         case ArrayEntriesIntrinsic:
         case ArrayKeysIntrinsic:
         case ArrayValuesIntrinsic: {
@@ -2649,11 +2662,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             setResult(iterator);
             return CallOptimizationResult::Inlined;
         }
-            
+
         case ArrayPushIntrinsic: {
             if (static_cast<unsigned>(argumentCountIncludingThis) >= MIN_SPARSE_ARRAY_INDEX)
                 return CallOptimizationResult::DidNothing;
-            
+
             ArrayMode arrayMode = getArrayMode(Array::Write);
             if (!arrayMode.isJSArray())
                 return CallOptimizationResult::DidNothing;

@@ -2620,15 +2620,71 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
         case ArrayFilterIntrinsic: {
             JSFunction* function = variant.function();
-            dataLogLn("bforward - DFG ArrayFilterIntrinsic: prediction=", prediction);
+            //dataLogLn("bforward - DFG ArrayFilterIntrinsic: prediction=", prediction);
             if (!function)
                 return CallOptimizationResult::DidNothing;
             ArrayMode arrayMode = getArrayMode(Array::Action::Write);
-            dataLogLn("bforward - DFG ArrayFilterIntrinsic: arrayMode=", arrayMode);
+            //dataLogLn("bforward - DFG ArrayFilterIntrinsic: arrayMode=", arrayMode);
             if (!arrayMode.isJSArray())
                 return CallOptimizationResult::DidNothing;
 
-            return CallOptimizationResult::DidNothing; // TODO
+
+            // ToThis
+            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+
+            // ToObject(thisValue)
+            unsigned errorStringIndex = UINT32_MAX; // TODO
+            Node* object = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue); // TODO: SpecNone could come from new structure
+            // TODO: check for null/undefined and error?
+
+
+            insertChecks();
+
+            // LengthOfArrayLike(object)
+            Node* len = addToGraph(ToLength, OpInfo(0), OpInfo(prediction), object); // TODO: is this correct? OpInfo(0), prediction might come from new struct
+
+            // let callback := argument 1
+            VirtualRegister callback = virtualRegisterForArgumentIncludingThis(1, registerOffset);
+            // IsCallable(callback)
+            addToGraph(IsCallable, get(callback));
+            // TODO: use IsCallable, throw exception if false
+
+
+            // TODO: NewTypedArray or NewArrayWithSpecies or NewArrayWithSize?
+            // ArraySpeciesCreate (TODO: not really, yet)
+            Node* arr = addToGraph(NewArrayWithSize, jsConstant(jsNumber(0)));
+
+            Node* k = jsConstant(jsNumber(0));
+            Node* to = jsConstant(jsNumber(0));
+
+            // TODO
+            UNUSED_VARIABLE(len);
+            //UNUSED_VARIABLE(arr);
+            UNUSED_VARIABLE(k);
+            UNUSED_VARIABLE(to);
+
+            setResult(arr);
+            // let to = 0
+            // while k < len {
+            //      let kPresent = HasProperty(object, k)
+            //      if (kPresent) {
+            //          let kValue = Get(object, k)
+            //          let callbackRes = Call(callback, thisArg, kValue, k, object)
+            //          let selected = ToBoolean(callbackRes)
+            //          if (selected) {
+            //              CreateDataPropertyOrThrow(arr, to, kValue) // putDirectIndex
+            //              to = to + 1
+            //          }
+            //      }
+            //      k = k + 1
+            // }
+            // return arr
+
+
+
+
+
+            return CallOptimizationResult::Inlined; // TODO
         }
 
         case ArrayEntriesIntrinsic:

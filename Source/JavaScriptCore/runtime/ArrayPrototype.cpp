@@ -2182,7 +2182,7 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
 
 JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
-    dataLogLn("bforward - arrayProtoFuncFilter");
+    //dataLogLn("bforward - arrayProtoFuncFilter");
 
     VM& vm = globalObject->vm();
     BuiltinProfiling::ArrayPrototypeFilterProfiling& profile = vm.builtinProfiling().arrayPrototypeFilter;

@@ -2620,68 +2620,172 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
         case ArrayFilterIntrinsic: {
             JSFunction* function = variant.function();
-            //dataLogLn("bforward - DFG ArrayFilterIntrinsic: prediction=", prediction);
             if (!function)
                 return CallOptimizationResult::DidNothing;
             ArrayMode arrayMode = getArrayMode(Array::Action::Write);
-            //dataLogLn("bforward - DFG ArrayFilterIntrinsic: arrayMode=", arrayMode);
             if (!arrayMode.isJSArray())
                 return CallOptimizationResult::DidNothing;
 
-
-            // ToThis
-            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-
-            // ToObject(thisValue)
-            unsigned errorStringIndex = UINT32_MAX; // TODO
-            Node* object = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue); // TODO: SpecNone could come from new structure
-            // TODO: check for null/undefined and error?
-
-
             insertChecks();
 
-            // LengthOfArrayLike(object)
-            Node* len = addToGraph(ToLength, OpInfo(0), OpInfo(prediction), object); // TODO: is this correct? OpInfo(0), prediction might come from new struct
+            /*
+             * ----- BLOCK 1: -----
+             * let thisValue := arg 0 (this)
+             * let callback := arg 1
+             * let thisArg := arg 2
+             * let O := ToObject(thisValue)
+             * let len := LengthOfArrayLike(O)
+             * let callable := IsCallable(callback)
+             * compare callable
+             * jump if false (unlikely) {
+             *   ----- BLOCK 2: -----
+             *   throw TypeError exception
+             *   return
+             * }
+             * ----- BLOCK 3: -----
+             * let A := ArraySpeciesCreate(O, 0) // can do some fast path if O is plain JSArray with no prototype shenanigans
+             * let k := JSConstant(0)
+             * let to := JSConstant(0)
+             * jump (unconditional) {
+             *   ----- BLOCK 4: -----
+             *   compare k, len
+             *   jump.gte (k >= len) {
+             *     ----- BLOCK 5: -----
+             *     return A
+             *   }
+             *   ----- BLOCK 6: -----
+             *   let kPresent := HasProperty(O, k) // could do some fast path for arrays with no holes
+             *   compare kPresent
+             *   jump if true (likely) {
+             *     ----- BLOCK 7: -----
+             *     let kValue := Get(O, k)
+             *     let callRes := Call(callback, (thisArg, kValue, k, O))
+             *     let selected := ToBoolean(callRes)
+             *     compare selected
+             *     jump if true {
+             *       ----- BLOCK 8: -----
+             *       CreateDataPropertyOrThrow(A, to, kValue)
+             *       let tmp0 := ArithAdd(to, JSConstant(1))
+             *       Set(to, tmp0)
+             *       jump (unconditional) to BLOCK 9
+             *     }
+             *     ----- BLOCK 9: -----
+             *     let tmp1 := ArithAdd(k, JSConstant(1))
+             *     Set(k, tmp1)
+             *     jump (unconditional) to BLOCK 4
+             *   }
+             * }
+             *
+             */
 
-            // let callback := argument 1
-            VirtualRegister callback = virtualRegisterForArgumentIncludingThis(1, registerOffset);
-            // IsCallable(callback)
-            addToGraph(IsCallable, get(callback));
-            // TODO: use IsCallable, throw exception if false
 
+            // helper to add a branch
+            auto addBranch = [&](Node* condition, BasicBlock* taken, BasicBlock *notTaken) {
+                BranchData* branchData = m_graph.m_branchData.add();
+                branchData->taken = BranchTarget(taken);
+                branchData->notTaken = BranchTarget(notTaken);
+                addToGraph(Branch, OpInfo(branchData), condition);
+            };
 
-            // TODO: NewTypedArray or NewArrayWithSpecies or NewArrayWithSize?
-            // ArraySpeciesCreate (TODO: not really, yet)
-            Node* arr = addToGraph(NewArrayWithSize, jsConstant(jsNumber(0)));
+            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+            Node* callback = get(virtualRegisterForArgumentIncludingThis(1, registerOffset));
+            Node* thisArg = get(virtualRegisterForArgumentIncludingThis(2, registerOffset));
 
-            Node* k = jsConstant(jsNumber(0));
-            Node* to = jsConstant(jsNumber(0));
+            unsigned errorStringIndex = UINT32_MAX; // TODO
+            Node* O = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue); // TODO: SpecNone could come from new structure
 
-            // TODO
-            UNUSED_VARIABLE(len);
-            //UNUSED_VARIABLE(arr);
-            UNUSED_VARIABLE(k);
-            UNUSED_VARIABLE(to);
+            Node* len = addToGraph(ToLength, OpInfo(0), OpInfo(prediction), O); // TODO: is this correct? OpInfo(0), prediction might come from new struct
 
-            setResult(arr);
-            // let to = 0
-            // while k < len {
-            //      let kPresent = HasProperty(object, k)
-            //      if (kPresent) {
-            //          let kValue = Get(object, k)
-            //          let callbackRes = Call(callback, thisArg, kValue, k, object)
-            //          let selected = ToBoolean(callbackRes)
-            //          if (selected) {
-            //              CreateDataPropertyOrThrow(arr, to, kValue) // putDirectIndex
-            //              to = to + 1
-            //          }
-            //      }
-            //      k = k + 1
-            // }
-            // return arr
+            Node* callable = addToGraph(IsCallable, callback);
 
+            // Executed if `!Callable(callback)`; throws a `TypeError`.
+            BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
+            // Executed if `Callable(callback)`; allocates result array `A` along with `k` and `to` counters, then enters loop.
+            BasicBlock* bbAllocations = allocateUntargetableBlock();
 
+            addBranch(callable, bbAllocations, bbThrowTypeError);
 
+            { // block 2
+                m_currentBlock = bbThrowTypeError;
+                clearCaches();
+                // keepUsesOfCurrentInstructionAlive(currentInstruction, checkpoint)
+                LazyJSValue errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
+                OpInfo info(m_graph.m_lazyJSValues.add(errorString));
+                Node* errorMessage = addToGraph(LazyJSConstant, info);
+                addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), errorMessage);
+                flushForTerminal();
+            }
+
+            { // block 3
+                // allocate A, k, to
+                m_currentBlock = bbAllocations;
+                clearCaches();
+                // keepUsesOfCurrentInstructionAlive...
+                Node* A = addToGraph(NewArrayWithSpecies, /* size */ jsConstant(jsNumber(0)), /* array */ O);
+                Node* k = jsConstant(jsNumber(0));
+                Node* to = jsConstant(jsNumber(0));
+
+                BasicBlock *bbLoopHeader      = allocateUntargetableBlock(), // BB4 - break if k >= len
+                           *bbLoopExitReturnA = allocateUntargetableBlock(), // BB5 - return A
+                           *bbLoopBodyHasProp = allocateUntargetableBlock(), // BB6 - HasProperty(O, k)
+                           *bbLoopBodyIncK    = allocateUntargetableBlock(), // BB9 - k++
+                           *bbLoopBodyCheck   = allocateUntargetableBlock(), // BB7 - get(O, k), callback
+                           *bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
+
+                {
+                    m_currentBlock = bbLoopHeader;
+                    clearCaches();
+                    // keepUsesOfCurrentInstructionAlive...
+                    Node* compare = addToGraph(CompareGreaterEq, k, len);
+                    addBranch(compare, bbLoopExitReturnA, bbLoopBodyHasProp);
+                }
+
+                {
+                    m_currentBlock = bbLoopExitReturnA;
+                    clearCaches();
+                    // keepUsesOfCurrentInstructionAlive...
+                    setResult(A);
+                    // TODO: do we need to emit a Return here?
+                    flushForTerminal();
+                }
+
+                {
+                    m_currentBlock = bbLoopBodyHasProp;
+                    clearCaches();
+                    // keepUsesOfCurrentInstructionAlive...
+                    Node* kPresent = addToGraph(HasOwnProperty, O, k);
+                    addBranch(kPresent, /* likely: */ bbLoopBodyCheck, bbLoopBodyIncK);
+                }
+
+                {
+                    m_currentBlock = bbLoopBodyIncK;
+                    clearCaches();
+                    set(k, addToGraph(ArithAdd, k, jsConstant(jsNumber(1))));
+                    addToGraph(Jump, OpInfo(bbLoopHeader));
+                }
+
+                {
+                    m_currentBlock = bbLoopBodyCheck;
+                    clearCaches();
+                    addVarArgChild(O);
+                    addVarArgChild(k);
+                    addVarArgChild(nullptr); // copied from op_get_by_val
+                    Node* kValue = addToGraph(Node::VarArg, GetByVal, OpInfo(arrayMode.asWord()), OpInfo(prediction));
+                    m_exitOK = false;
+                    // TODO: do we need m_slowGetByVal here?
+                    // m_graph.m_slowGetByVal.add(kValue);
+                    // TODO: handle call
+                    // TODO: handle ToBoolean
+                }
+
+                {
+                    m_currentBlock = bbLoopBodySetProp;
+                    // addToGraph(PutByVal); ...
+                    set(to, addToGraph(ArithAdd, to, jsConstant(jsNumber(1))));
+                    addToGraph(Jump, OpInfo(bbLoopBodyIncK));
+                }
+
+            }
 
 
             return CallOptimizationResult::Inlined; // TODO

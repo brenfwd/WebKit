@@ -32,7 +32,6 @@
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
-#include "BuiltinProfiling.h"
 #include "CalleeBits.h"
 #include "CodeSpecializationKind.h"
 #include "ConcurrentJSLock.h"
@@ -533,8 +532,8 @@ public:
     Vector<unsigned> stringSplitIndice;
     StringReplaceCache stringReplaceCache;
 
-    std::unique_ptr<BuiltinProfiling::ProfilingRegistry> m_builtinProfiling { std::make_unique<BuiltinProfiling::ProfilingRegistry>() };
-    BuiltinProfiling::ProfilingRegistry& builtinProfiling() { return *m_builtinProfiling; }
+    // std::unique_ptr<BuiltinProfiling::ProfilingRegistry> m_builtinProfiling;
+    // BuiltinProfiling::ProfilingRegistry& builtinProfiling();
 
     bool mightBeExecutingTaintedCode() const { return m_mightBeExecutingTaintedCode; }
     bool* addressOfMightBeExecutingTaintedCode() { return &m_mightBeExecutingTaintedCode; }

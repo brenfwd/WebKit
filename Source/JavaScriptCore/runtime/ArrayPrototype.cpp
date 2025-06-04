@@ -2182,13 +2182,15 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
 
 JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
-    //dataLogLn("bforward - arrayProtoFuncFilter");
-
     VM& vm = globalObject->vm();
-    BuiltinProfiling::ArrayPrototypeFilterProfiling& profile = vm.builtinProfiling().arrayPrototypeFilter;
-    UNUSED_VARIABLE(profile); // TODO
-
+    // BuiltinProfiling::ArrayPrototypeFilterProfiling& profile = vm.builtinProfiling().arrayPrototypeFilter;
+    // UNUSED_VARIABLE(profile); // TODO
     auto scope = DECLARE_THROW_SCOPE(vm);
+
+    ValueProfile p;
+
+    auto codeBlock = callFrame->callerFrame()->codeBlock();
+    dataLogLn("bforward - codeBlock = ", codeBlock->source().view());
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });
@@ -2231,26 +2233,12 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
             auto fromValue = thisObject->getIndex(globalObject, i);
             RETURN_IF_EXCEPTION(scope, { });
             MarkedArgumentBuffer args;
-            args.clear();
             args.append(fromValue);
             args.append(jsNumber(i));
             args.append(thisObject);
             JSValue callbackRes = call(globalObject, argCallback, getCallData(argCallback), argThisArg, args);
-            // for (; k < finalIndex; k++) {
-            //     thisObject->putByIndexInline(globalObject, k, value, true);
-            //     RETURN_IF_EXCEPTION(scope, { });
-            // }
             if (callbackRes.toBoolean(globalObject)) {
-                // PropertyDescriptor desc;
-                // desc.setValue(fromValue);
-                // desc.setConfigurable(true);
-                // desc.setWritable(true);
-                // desc.setEnumerable(true);
-                // result->defineOwnProperty(result, globalObject, Identifier::from(vm, nextIndex), desc, true);
-
-                // result->putByIndexInline(globalObject, nextIndex, fromValue, true);
                 result->putDirectIndex(globalObject, nextIndex, fromValue, 0, PutDirectIndexShouldThrow);
-                // JSObject::putByIndex(result, globalObject, nextIndex, fromValue, true);
                 RETURN_IF_EXCEPTION(scope, { });
                 ++nextIndex;
             }

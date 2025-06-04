@@ -2618,6 +2618,38 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             [[fallthrough]];
         }
 
+        case ArrayEntriesIntrinsic:
+        case ArrayKeysIntrinsic:
+        case ArrayValuesIntrinsic: {
+            JSGlobalObject* globalObject = m_graph.globalObjectFor(currentNodeOrigin().semantic);
+            auto* function = variant.function();
+            if (!function)
+                return CallOptimizationResult::DidNothing;
+            if (function->globalObject() != globalObject)
+                return CallOptimizationResult::DidNothing;
+
+            insertChecks();
+
+            std::optional<IterationKind> kind = interationKindForIntrinsic(intrinsic);
+            RELEASE_ASSERT(!!kind);
+
+            // Add the constant before exit becomes invalid because we may want to insert (redundant) checks on it in Fixup.
+            Node* kindNode = jsConstant(jsNumber(static_cast<uint32_t>(*kind)));
+
+            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+            // We don't have an existing error string.
+            unsigned errorStringIndex = UINT32_MAX;
+            Node* object = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue);
+
+            Node* iterator = addToGraph(NewInternalFieldObject, OpInfo(m_graph.registerStructure(globalObject->arrayIteratorStructure())));
+
+            addToGraph(PutInternalField, OpInfo(static_cast<uint32_t>(JSArrayIterator::Field::IteratedObject)), iterator, object);
+            addToGraph(PutInternalField, OpInfo(static_cast<uint32_t>(JSArrayIterator::Field::Kind)), iterator, kindNode);
+
+            setResult(iterator);
+            return CallOptimizationResult::Inlined;
+        }
+
         case ArrayFilterIntrinsic: {
             JSFunction* function = variant.function();
             if (!function)
@@ -2626,57 +2658,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             if (!arrayMode.isJSArray())
                 return CallOptimizationResult::DidNothing;
 
+/*
             insertChecks();
-
-            /*
-             * ----- BLOCK 1: -----
-             * let thisValue := arg 0 (this)
-             * let callback := arg 1
-             * let thisArg := arg 2
-             * let O := ToObject(thisValue)
-             * let len := LengthOfArrayLike(O)
-             * let callable := IsCallable(callback)
-             * compare callable
-             * jump if false (unlikely) {
-             *   ----- BLOCK 2: -----
-             *   throw TypeError exception
-             *   return
-             * }
-             * ----- BLOCK 3: -----
-             * let A := ArraySpeciesCreate(O, 0) // can do some fast path if O is plain JSArray with no prototype shenanigans
-             * let k := JSConstant(0)
-             * let to := JSConstant(0)
-             * jump (unconditional) {
-             *   ----- BLOCK 4: -----
-             *   compare k, len
-             *   jump.gte (k >= len) {
-             *     ----- BLOCK 5: -----
-             *     return A
-             *   }
-             *   ----- BLOCK 6: -----
-             *   let kPresent := HasProperty(O, k) // could do some fast path for arrays with no holes
-             *   compare kPresent
-             *   jump if true (likely) {
-             *     ----- BLOCK 7: -----
-             *     let kValue := Get(O, k)
-             *     let callRes := Call(callback, (thisArg, kValue, k, O))
-             *     let selected := ToBoolean(callRes)
-             *     compare selected
-             *     jump if true {
-             *       ----- BLOCK 8: -----
-             *       CreateDataPropertyOrThrow(A, to, kValue)
-             *       let tmp0 := ArithAdd(to, JSConstant(1))
-             *       Set(to, tmp0)
-             *       jump (unconditional) to BLOCK 9
-             *     }
-             *     ----- BLOCK 9: -----
-             *     let tmp1 := ArithAdd(k, JSConstant(1))
-             *     Set(k, tmp1)
-             *     jump (unconditional) to BLOCK 4
-             *   }
-             * }
-             *
-             */
 
 
             // helper to add a branch
@@ -2721,16 +2704,20 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 m_currentBlock = bbAllocations;
                 clearCaches();
                 // keepUsesOfCurrentInstructionAlive...
-                Node* A = addToGraph(NewArrayWithSpecies, /* size */ jsConstant(jsNumber(0)), /* array */ O);
-                Node* k = jsConstant(jsNumber(0));
-                Node* to = jsConstant(jsNumber(0));
+                Node* A = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), O);
+                // Node* k = jsConstant(jsNumber(0));
+                // Node* to = jsConstant(jsNumber(0));
+                auto k = Operand::tmp(0);
+                auto to = Operand::tmp(1);
+                set(k, jsConstant(jsNumber(0)));
+                set(to, jsConstant(jsNumber(0)));
 
-                BasicBlock *bbLoopHeader      = allocateUntargetableBlock(), // BB4 - break if k >= len
-                           *bbLoopExitReturnA = allocateUntargetableBlock(), // BB5 - return A
-                           *bbLoopBodyHasProp = allocateUntargetableBlock(), // BB6 - HasProperty(O, k)
-                           *bbLoopBodyIncK    = allocateUntargetableBlock(), // BB9 - k++
-                           *bbLoopBodyCheck   = allocateUntargetableBlock(), // BB7 - get(O, k), callback
-                           *bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
+                BasicBlock* bbLoopHeader = allocateUntargetableBlock(); // BB4 - break if k >= len
+                BasicBlock* bbLoopExitReturnA = allocateUntargetableBlock(); // BB5 - return A
+                BasicBlock* bbLoopBodyHasProp = allocateUntargetableBlock(); // BB6 - HasProperty(O, k)
+                BasicBlock* bbLoopBodyIncK = allocateUntargetableBlock(); // BB9 - k++
+                BasicBlock* bbLoopBodyCheck = allocateUntargetableBlock(); // BB7 - get(O, k), callback
+                BasicBlock* bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
 
                 {
                     m_currentBlock = bbLoopHeader;
@@ -2753,8 +2740,9 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     m_currentBlock = bbLoopBodyHasProp;
                     clearCaches();
                     // keepUsesOfCurrentInstructionAlive...
-                    Node* kPresent = addToGraph(HasOwnProperty, O, k);
-                    addBranch(kPresent, /* likely: */ bbLoopBodyCheck, bbLoopBodyIncK);
+                    // Node* kPresent = addToGraph(HasOwnProperty, O, k);
+                    auto kPresent = Operand::tmp(2);
+                    addBranch(get(kPresent), bbLoopBodyCheck, bbLoopBodyIncK);
                 }
 
                 {
@@ -2768,7 +2756,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     m_currentBlock = bbLoopBodyCheck;
                     clearCaches();
                     addVarArgChild(O);
-                    addVarArgChild(k);
+                    addVarArgChild(get(k));
                     addVarArgChild(nullptr); // copied from op_get_by_val
                     Node* kValue = addToGraph(Node::VarArg, GetByVal, OpInfo(arrayMode.asWord()), OpInfo(prediction));
                     m_exitOK = false;
@@ -2789,39 +2777,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
 
             return CallOptimizationResult::Inlined; // TODO
+*/
+            return CallOptimizationResult::DidNothing;
         }
 
-        case ArrayEntriesIntrinsic:
-        case ArrayKeysIntrinsic:
-        case ArrayValuesIntrinsic: {
-            JSGlobalObject* globalObject = m_graph.globalObjectFor(currentNodeOrigin().semantic);
-            auto* function = variant.function();
-            if (!function)
-                return CallOptimizationResult::DidNothing;
-            if (function->globalObject() != globalObject)
-                return CallOptimizationResult::DidNothing;
-
-            insertChecks();
-
-            std::optional<IterationKind> kind = iterationKindForIntrinsic(intrinsic);
-            RELEASE_ASSERT(!!kind);
-
-            // Add the constant before exit becomes invalid because we may want to insert (redundant) checks on it in Fixup.
-            Node* kindNode = jsConstant(jsNumber(static_cast<uint32_t>(*kind)));
-
-            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-            // We don't have an existing error string.
-            unsigned errorStringIndex = UINT32_MAX;
-            Node* object = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue);
-
-            Node* iterator = addToGraph(NewInternalFieldObject, OpInfo(m_graph.registerStructure(globalObject->arrayIteratorStructure())));
-
-            addToGraph(PutInternalField, OpInfo(static_cast<uint32_t>(JSArrayIterator::Field::IteratedObject)), iterator, object);
-            addToGraph(PutInternalField, OpInfo(static_cast<uint32_t>(JSArrayIterator::Field::Kind)), iterator, kindNode);
-
-            setResult(iterator);
-            return CallOptimizationResult::Inlined;
-        }
 
         case ArrayPushIntrinsic: {
             if (static_cast<unsigned>(argumentCountIncludingThis) >= MIN_SPARSE_ARRAY_INDEX)

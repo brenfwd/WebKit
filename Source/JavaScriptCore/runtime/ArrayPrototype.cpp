@@ -2189,8 +2189,11 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
 
     ValueProfile p;
 
-    auto codeBlock = callFrame->callerFrame()->codeBlock();
-    dataLogLn("bforward - codeBlock = ", codeBlock->source().view());
+    // auto codeBlock = callFrame->callerFrame()->codeBlock();
+    // dataLogLn("bforward - codeBlock = ", codeBlock->source().view());
+    //
+    auto x = callFrame->codeBlock();
+    dataLogLn("bforward - x = ", x->source().view());
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });

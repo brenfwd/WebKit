@@ -2,23 +2,23 @@
 
 // #include "wtf/TZoneMalloc.h"
 
+#include <variant>
+
 #include "bytecode/ValueProfile.h"
 
 namespace JSC::BuiltinProfiling {
 
-class ArrayPrototypeFilterProfiling {
-// WTF_MAKE_TZONE_ALLOCATED(ArrayPrototypeFilterProfiling);
+class ArrayPrototypeFilterProfile {
 public:
-    ArrayPrototypeFilterProfiling() = default;
+    ArrayPrototypeFilterProfile() = default;
 
-public: // TODO
+public:
     ValueProfile p;
 };
 
-struct ProfilingRegistry {
-// WTF_MAKE_TZONE_ALLOCATED(ProfilingRegistry);
-    ArrayPrototypeFilterProfiling arrayPrototypeFilter;
-};
+using BuiltinProfile = std::variant<
+    ArrayPrototypeFilterProfile
+>;
 
 } // namespace JSC::BuiltinProfiling
 

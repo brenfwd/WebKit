@@ -2652,12 +2652,21 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
         case ArrayFilterIntrinsic: {
             JSFunction* function = variant.function();
-            if (!function)
+            if (!function || !function->rareData())
                 return CallOptimizationResult::DidNothing;
+
             ArrayMode arrayMode = getArrayMode(Array::Action::Write);
             if (!arrayMode.isJSArray())
                 return CallOptimizationResult::DidNothing;
 
+            FunctionRareData* rareData = function->rareData();
+            ASSERT(rareData);
+
+            auto* profile = rareData->tryGetBuiltinProfileOfKind<BuiltinProfiling::ArrayPrototypeFilterProfile>();
+            if (!profile)
+                return CallOptimizationResult::DidNothing;
+
+            dataLogLn("bforward - profile = ", profile);
 /*
             insertChecks();
 

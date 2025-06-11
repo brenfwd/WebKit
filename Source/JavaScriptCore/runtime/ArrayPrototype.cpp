@@ -2183,17 +2183,15 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
 JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
-    // BuiltinProfiling::ArrayPrototypeFilterProfiling& profile = vm.builtinProfiling().arrayPrototypeFilter;
-    // UNUSED_VARIABLE(profile); // TODO
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    ValueProfile p;
-
-    // auto codeBlock = callFrame->callerFrame()->codeBlock();
-    // dataLogLn("bforward - codeBlock = ", codeBlock->source().view());
-    //
-    auto x = callFrame->codeBlock();
-    dataLogLn("bforward - x = ", x->source().view());
+    JSFunction* selfJsFunction = jsCast<JSFunction*>(callFrame->jsCallee());
+    FunctionRareData* rareData = selfJsFunction->ensureRareData(vm);
+    auto* profile = rareData->tryGetBuiltinProfileOfKind<BuiltinProfiling::ArrayPrototypeFilterProfile>();
+    if (!profile) {
+        profile = rareData->allocateBuiltinProfile<BuiltinProfiling::ArrayPrototypeFilterProfile>();
+    }
+    ASSERT(profile);
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });
@@ -2210,6 +2208,8 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
         return throwVMTypeError(globalObject, scope, "Array.prototype.filter callback must be a function"_s);
 
     JSValue argThisArg = callFrame->argument(1);
+
+    // general case
 
     std::pair<SpeciesConstructResult, JSObject*> speciesResult = speciesConstructArray(globalObject, thisObject, 0);
     EXCEPTION_ASSERT(!!scope.exception() == (speciesResult.first == SpeciesConstructResult::Exception));
@@ -2230,12 +2230,13 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
     }
 
     uint64_t nextIndex = 0;
+    MarkedArgumentBuffer args;
     for (uint64_t i = 0; i < length; i++) {
         if (thisObject->hasProperty(globalObject, i)) [[likely]] {
             // TODO: switch indexing type and use custom hole checking logic for each type
             auto fromValue = thisObject->getIndex(globalObject, i);
             RETURN_IF_EXCEPTION(scope, { });
-            MarkedArgumentBuffer args;
+            args.clear();
             args.append(fromValue);
             args.append(jsNumber(i));
             args.append(thisObject);

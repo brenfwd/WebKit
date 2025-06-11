@@ -1,10 +1,10 @@
 #pragma once
 
-// #include "wtf/TZoneMalloc.h"
-
 #include <variant>
 
+#include "bytecode/ArrayAllocationProfile.h"
 #include "bytecode/ValueProfile.h"
+#include "wtf/TZoneMalloc.h"
 
 namespace JSC::BuiltinProfiling {
 
@@ -13,12 +13,41 @@ public:
     ArrayPrototypeFilterProfile() = default;
 
 public:
-    ValueProfile p;
+    ArrayAllocationProfile m_arrayAllocProfile;
+    ValueProfile m_thisArgValueProfile;
+    ValueProfile m_callbackReturnValueProfile;
 };
 
-using BuiltinProfile = std::variant<
-    ArrayPrototypeFilterProfile
+#define JSC_BUILTIN_PROFILE_TYPE_FOREACH(macro) \
+    macro(ArrayPrototypeFilterProfile)
+
+using BuiltinProfileVariant = std::variant<
+    std::monostate
+    #define X(name) , name
+    JSC_BUILTIN_PROFILE_TYPE_FOREACH(X)
+    #undef X
 >;
+
+class BuiltinProfile {
+WTF_MAKE_TZONE_ALLOCATED(BuiltinProfile);
+private:
+    BuiltinProfileVariant m_variant;
+
+public:
+    template <typename... Args>
+    inline explicit BuiltinProfile(Args&&... args) : m_variant(std::forward<Args>(args)...) {}
+
+    inline BuiltinProfileVariant& variant() { return m_variant; }
+    inline const BuiltinProfileVariant& variant() const { return m_variant; }
+};
+
+template <typename T>
+concept IsBuiltinProfileType =
+    false
+    #define X(name) || std::is_same_v<T, name>
+    JSC_BUILTIN_PROFILE_TYPE_FOREACH(X)
+    #undef X
+    ;
 
 } // namespace JSC::BuiltinProfiling
 

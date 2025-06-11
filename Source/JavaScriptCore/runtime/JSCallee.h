@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "BuiltinProfiling.h"
 #include "JSGlobalObject.h"
 #include "JSObject.h"
 #include "JSScope.h"

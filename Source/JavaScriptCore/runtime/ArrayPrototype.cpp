@@ -2195,13 +2195,18 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });
+    // TODO: is computeUpdatedPredictionForExtraValue() the correct method?
+    profile->m_thisValueProfile.m_buckets[0] = JSValue::encode(thisValue);
     if (thisValue.isUndefinedOrNull()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "Array.prototype.filter requires that |this| not be null or undefined"_s);
+
     auto* thisObject = thisValue.toObject(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
+    profile->m_toObjectValueProfile.m_buckets[0] = JSValue::encode(thisObject);
 
     uint64_t length = toLength(globalObject, thisObject);
     RETURN_IF_EXCEPTION(scope, { });
+    profile->m_toLengthValueProfile.m_buckets[0] = JSValue::encode(jsNumber(length));
 
     JSValue argCallback = callFrame->argument(0);
     if (!argCallback.isCallable())
@@ -2230,17 +2235,13 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
     }
 
     uint64_t nextIndex = 0;
-    MarkedArgumentBuffer args;
+    CachedCall cachedCall(globalObject, jsCast<JSFunction*>(argCallback), 3);
     for (uint64_t i = 0; i < length; i++) {
         if (thisObject->hasProperty(globalObject, i)) [[likely]] {
             // TODO: switch indexing type and use custom hole checking logic for each type
             auto fromValue = thisObject->getIndex(globalObject, i);
             RETURN_IF_EXCEPTION(scope, { });
-            args.clear();
-            args.append(fromValue);
-            args.append(jsNumber(i));
-            args.append(thisObject);
-            JSValue callbackRes = call(globalObject, argCallback, getCallData(argCallback), argThisArg, args);
+            JSValue callbackRes = cachedCall.callWithArguments(globalObject, argThisArg, fromValue, jsNumber(i), thisObject);
             if (callbackRes.toBoolean(globalObject)) {
                 result->putDirectIndex(globalObject, nextIndex, fromValue, 0, PutDirectIndexShouldThrow);
                 RETURN_IF_EXCEPTION(scope, { });

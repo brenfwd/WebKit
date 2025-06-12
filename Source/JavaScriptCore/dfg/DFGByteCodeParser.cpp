@@ -2666,10 +2666,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             if (!profile)
                 return CallOptimizationResult::DidNothing;
 
-            dataLogLn("bforward - profile = ", profile);
-/*
             insertChecks();
-
 
             // helper to add a branch
             auto addBranch = [&](Node* condition, BasicBlock* taken, BasicBlock *notTaken) {
@@ -2679,20 +2676,27 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 addToGraph(Branch, OpInfo(branchData), condition);
             };
 
-            Node* thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(getPrediction()), get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+            Node* thisValue = addToGraph(ToThis,
+                OpInfo(ECMAMode::strict()),
+                OpInfo(profile->m_thisValueProfile.m_prediction),
+                get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
             Node* callback = get(virtualRegisterForArgumentIncludingThis(1, registerOffset));
             Node* thisArg = get(virtualRegisterForArgumentIncludingThis(2, registerOffset));
 
             unsigned errorStringIndex = UINT32_MAX; // TODO
-            Node* O = addToGraph(ToObject, OpInfo(errorStringIndex), OpInfo(SpecNone), thisValue); // TODO: SpecNone could come from new structure
+            Node* O = addToGraph(ToObject,
+                OpInfo(errorStringIndex),
+                OpInfo(profile->m_toObjectValueProfile.m_prediction), // OpInfo(SpecNone),
+                thisValue);
 
-            Node* len = addToGraph(ToLength, OpInfo(0), OpInfo(prediction), O); // TODO: is this correct? OpInfo(0), prediction might come from new struct
+            Node* len = addToGraph(ToLength,
+                OpInfo(0),
+                OpInfo(profile->m_toLengthValueProfile.m_prediction), // OpInfo(prediction),
+                O);
 
             Node* callable = addToGraph(IsCallable, callback);
 
-            // Executed if `!Callable(callback)`; throws a `TypeError`.
             BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
-            // Executed if `Callable(callback)`; allocates result array `A` along with `k` and `to` counters, then enters loop.
             BasicBlock* bbAllocations = allocateUntargetableBlock();
 
             addBranch(callable, bbAllocations, bbThrowTypeError);
@@ -2767,11 +2771,14 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     addVarArgChild(O);
                     addVarArgChild(get(k));
                     addVarArgChild(nullptr); // copied from op_get_by_val
-                    Node* kValue = addToGraph(Node::VarArg, GetByVal, OpInfo(arrayMode.asWord()), OpInfo(prediction));
+                    Node* kValue = addToGraph(Node::VarArg, GetByVal,
+                        OpInfo(arrayMode.asWord()),
+                        OpInfo(profile->m_getByValValueProfile.m_prediction));
                     m_exitOK = false;
                     // TODO: do we need m_slowGetByVal here?
                     // m_graph.m_slowGetByVal.add(kValue);
                     // TODO: handle call
+
                     // TODO: handle ToBoolean
                 }
 
@@ -2786,8 +2793,6 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
 
             return CallOptimizationResult::Inlined; // TODO
-*/
-            return CallOptimizationResult::DidNothing;
         }
 
 

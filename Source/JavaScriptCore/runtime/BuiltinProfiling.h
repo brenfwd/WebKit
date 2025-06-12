@@ -4,18 +4,39 @@
 
 #include "bytecode/ArrayAllocationProfile.h"
 #include "bytecode/ValueProfile.h"
+#include "runtime/ConcurrentJSLock.h"
 #include "wtf/TZoneMalloc.h"
 
 namespace JSC::BuiltinProfiling {
 
-class ArrayPrototypeFilterProfile {
+class BuiltinProfileBase {
+public:
+    virtual ~BuiltinProfileBase() = default;
+
+    mutable ConcurrentJSLock m_lock;
+
+    virtual void updateValueProfiles(const ConcurrentJSLocker&) = 0;
+};
+
+class ArrayPrototypeFilterProfile : public BuiltinProfileBase {
 public:
     ArrayPrototypeFilterProfile() = default;
 
 public:
-    ArrayAllocationProfile m_arrayAllocProfile;
-    ValueProfile m_thisArgValueProfile;
-    ValueProfile m_callbackReturnValueProfile;
+    ValueProfile m_thisValueProfile;
+    ValueProfile m_toObjectValueProfile;
+    ValueProfile m_toLengthValueProfile;
+    ValueProfile m_getByValValueProfile;
+    // ArrayAllocationProfile m_arrayAllocProfile;
+    // ValueProfile m_thisArgValueProfile;
+    // ValueProfile m_callbackReturnValueProfile;
+
+    void updateValueProfiles(const ConcurrentJSLocker& locker) override {
+        m_thisValueProfile.computeUpdatedPrediction(locker);
+        m_toObjectValueProfile.computeUpdatedPrediction(locker);
+        m_toLengthValueProfile.computeUpdatedPrediction(locker);
+        m_getByValValueProfile.computeUpdatedPrediction(locker);
+    }
 };
 
 #define JSC_BUILTIN_PROFILE_TYPE_FOREACH(macro) \

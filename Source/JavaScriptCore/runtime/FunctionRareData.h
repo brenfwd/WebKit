@@ -148,6 +148,7 @@ public:
         ASSERT(result);
         return result;
     }
+
     template <BuiltinProfiling::IsBuiltinProfileType T>
     inline T* tryGetBuiltinProfileOfKind() const {
         if (!m_builtinProfiling)

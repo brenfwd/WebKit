@@ -141,13 +141,24 @@ public:
     template <BuiltinProfiling::IsBuiltinProfileType T, typename... Args>
     inline T* allocateBuiltinProfile(Args&&... args) {
         ASSERT(!hasBuiltinProfile());
-        m_builtinProfiling = makeUnique<BuiltinProfiling::BuiltinProfile>(
-            T(std::forward<Args>(args)...)
+        m_builtinProfiling = makeUnique<BuiltinProfiling::BuiltinProfile, Args...>(
+            std::in_place_type<T>,
+            std::forward<Args>(args)...
         );
         T* result = std::get_if<T>(&m_builtinProfiling->variant());
         ASSERT(result);
         return result;
     }
+    
+    template <BuiltinProfiling::IsBuiltinProfileType T>
+    inline T* allocateBuiltinProfile() {
+        ASSERT(!hasBuiltinProfile());
+        m_builtinProfiling = makeUnique<BuiltinProfiling::BuiltinProfile>(std::in_place_type<T>);
+        T* result = std::get_if<T>(&m_builtinProfiling->variant());
+        ASSERT(result);
+        return result;
+    }
+
 
     template <BuiltinProfiling::IsBuiltinProfileType T>
     inline T* tryGetBuiltinProfileOfKind() const {

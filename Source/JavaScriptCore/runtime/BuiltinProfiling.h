@@ -27,6 +27,8 @@ public:
     ValueProfile m_toObjectValueProfile;
     ValueProfile m_toLengthValueProfile;
     ValueProfile m_getByValValueProfile;
+    ValueProfile m_callbackResValueProfile;
+
     // ArrayAllocationProfile m_arrayAllocProfile;
     // ValueProfile m_thisArgValueProfile;
     // ValueProfile m_callbackReturnValueProfile;
@@ -36,31 +38,20 @@ public:
         m_toObjectValueProfile.computeUpdatedPrediction(locker);
         m_toLengthValueProfile.computeUpdatedPrediction(locker);
         m_getByValValueProfile.computeUpdatedPrediction(locker);
+        m_callbackResValueProfile.computeUpdatedPrediction(locker);
     }
 };
 
 #define JSC_BUILTIN_PROFILE_TYPE_FOREACH(macro) \
     macro(ArrayPrototypeFilterProfile)
 
+using BuiltinProfileInvalid = struct{};
 using BuiltinProfileVariant = std::variant<
-    std::monostate
+    BuiltinProfileInvalid
     #define X(name) , name
     JSC_BUILTIN_PROFILE_TYPE_FOREACH(X)
     #undef X
 >;
-
-class BuiltinProfile {
-WTF_MAKE_TZONE_ALLOCATED(BuiltinProfile);
-private:
-    BuiltinProfileVariant m_variant;
-
-public:
-    template <typename... Args>
-    inline explicit BuiltinProfile(Args&&... args) : m_variant(std::forward<Args>(args)...) {}
-
-    inline BuiltinProfileVariant& variant() { return m_variant; }
-    inline const BuiltinProfileVariant& variant() const { return m_variant; }
-};
 
 template <typename T>
 concept IsBuiltinProfileType =
@@ -69,6 +60,24 @@ concept IsBuiltinProfileType =
     JSC_BUILTIN_PROFILE_TYPE_FOREACH(X)
     #undef X
     ;
+
+class BuiltinProfile {
+WTF_MAKE_TZONE_ALLOCATED(BuiltinProfile);
+private:
+    BuiltinProfileVariant m_variant;
+
+public:
+    template <IsBuiltinProfileType T, typename... Args>
+    inline explicit BuiltinProfile(std::in_place_type_t<T>, Args&&... args) : m_variant(std::in_place_type<T>, std::forward<Args>(args)...) {}
+
+    template <IsBuiltinProfileType T>
+    inline explicit BuiltinProfile(std::in_place_type_t<T>) : m_variant(std::in_place_type<T>) {}
+
+    inline BuiltinProfileVariant& variant() { return m_variant; }
+    inline const BuiltinProfileVariant& variant() const { return m_variant; }
+};
+
+
 
 } // namespace JSC::BuiltinProfiling
 

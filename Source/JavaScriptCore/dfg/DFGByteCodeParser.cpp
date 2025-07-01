@@ -2667,207 +2667,193 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 return CallOptimizationResult::DidNothing;
 
             JSGlobalObject* globalObject = m_graph.globalObjectFor(currentNodeOrigin().semantic);
-
             if (globalObject->arraySpeciesWatchpointSet().state() != IsWatched
                 || !globalObject->havingABadTimeWatchpointSet().isStillValid()
                 || globalObject->arrayPrototypeChainIsSaneWatchpointSet().state() != IsWatched) {
                 return CallOptimizationResult::DidNothing;
             }
+
             m_graph.watchpoints().addLazily(globalObject->arraySpeciesWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->havingABadTimeWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->arrayPrototypeChainIsSaneWatchpointSet());
 
-
-            insertChecks();
-            ensureTmps(5);
-
-            // helper to add a branch
-            auto addBranch = [&](Node* condition, BasicBlock* taken, BasicBlock *notTaken) {
+            auto addBranch = [&](Node* condition, BasicBlock* taken, BasicBlock *notTaken) ALWAYS_INLINE_LAMBDA {
                 BranchData* branchData = m_graph.m_branchData.add();
                 branchData->taken = BranchTarget(taken);
                 branchData->notTaken = BranchTarget(notTaken);
                 addToGraph(Branch, OpInfo(branchData), condition);
+                // flushForTerminal();
+            };
+            auto addJump = [&](BasicBlock* blockPtr) ALWAYS_INLINE_LAMBDA {
+                // addToGraph(Jump, OpInfo(blockPtr));
+                addJumpTo(blockPtr);
+                // flushForTerminal();
+            };
+            auto defineBlock = [&](BasicBlock* blockPtr, auto definer) ALWAYS_INLINE_LAMBDA {
+                m_currentBlock = blockPtr;
+                clearCaches();
+                definer();
+            };
+            auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
+                m_exitOK = true;
+                addToGraph(ExitOK);
             };
 
-            Node* thisValue = addToGraph(ToThis,
-                OpInfo(ECMAMode::strict()),
-                OpInfo(profile->m_thisValueProfile.m_prediction),
-                get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-            Node* callback = get(virtualRegisterForArgumentIncludingThis(1, registerOffset));
-            Node* thisArg = get(virtualRegisterForArgumentIncludingThis(2, registerOffset));
-
-            unsigned errorStringIndex = UINT32_MAX; // TODO
-            Node* O = addToGraph(ToObject,
-                OpInfo(errorStringIndex),
-                OpInfo(profile->m_toObjectValueProfile.m_prediction), // OpInfo(SpecNone),
-                thisValue);
-
-            Node* len = addToGraph(ToLength,
-                OpInfo(0),
-                OpInfo(profile->m_toLengthValueProfile.m_prediction), // OpInfo(prediction),
-                O);
-
-            Node* callable = addToGraph(IsCallable, callback);
-
+            BasicBlock* entry = allocateUntargetableBlock();
             BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
             BasicBlock* bbAllocations = allocateUntargetableBlock();
+            BasicBlock* bbLoopHeader = allocateUntargetableBlock(); // BB4 - break if k >= len
+            BasicBlock* bbLoopExitReturnA = allocateUntargetableBlock(); // BB5 - return A
+            BasicBlock* bbLoopBodyHasProp = allocateUntargetableBlock(); // BB6 - HasProperty(O, k)
+            BasicBlock* bbLoopBodyIncK = allocateUntargetableBlock(); // BB9 - k++
+            BasicBlock* bbLoopBodyCheck = allocateUntargetableBlock(); // BB7 - get(O, k), callback
+            BasicBlock* bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
+            BasicBlock* continuation = allocateUntargetableBlock();
 
-            addBranch(callable, bbAllocations, bbThrowTypeError);
+            auto oldIndex = m_currentIndex;
 
-            { // block 2
-                m_currentBlock = bbThrowTypeError;
-                clearCaches();
-                // keepUsesOfCurrentInstructionAlive(currentInstruction, checkpoint)
-                LazyJSValue errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
-                OpInfo info(m_graph.m_lazyJSValues.add(errorString));
-                Node* errorMessage = addToGraph(LazyJSConstant, info);
-                addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), errorMessage);
-                flushForTerminal();
-            }
+            dataLogLn("bforward - ArrayFilterIntrinsic #########################################################");
 
-            { // block 3
-                // allocate A, k, to
-                m_currentBlock = bbAllocations;
-                clearCaches();
-                // keepUsesOfCurrentInstructionAlive...
-                Node* A = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), O);
-                // Node* k = jsConstant(jsNumber(0));
-                // Node* to = jsConstant(jsNumber(0));
-                auto k = Operand::tmp(0);
-                auto to = Operand::tmp(1);
-                set(k, jsConstant(jsNumber(0)));
-                set(to, jsConstant(jsNumber(0)));
+            insertChecks();
+            ensureTmps(5);
 
-                auto scratch = Operand::tmp(2);
-                set(scratch, jsConstant(jsUndefined()));
+            addToGraph(Jump, OpInfo(entry));
+            flushForTerminal();
 
-                BasicBlock* bbLoopHeader = allocateUntargetableBlock(); // BB4 - break if k >= len
-                BasicBlock* bbLoopExitReturnA = allocateUntargetableBlock(); // BB5 - return A
-                BasicBlock* bbLoopBodyHasProp = allocateUntargetableBlock(); // BB6 - HasProperty(O, k)
-                BasicBlock* bbLoopBodyIncK = allocateUntargetableBlock(); // BB9 - k++
-                BasicBlock* bbLoopBodyCheck = allocateUntargetableBlock(); // BB7 - get(O, k), callback
-                BasicBlock* bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
+            auto k = Operand::tmp(0);
+            auto to = Operand::tmp(1);
+            auto scratch = Operand::tmp(2);
 
-                {
-                    m_currentBlock = bbLoopHeader;
-                    clearCaches();
-                    // keepUsesOfCurrentInstructionAlive...
-                    Node* compare = addToGraph(CompareGreaterEq, get(k), len);
-                    addBranch(compare, bbLoopExitReturnA, bbLoopBodyHasProp);
-                }
+            defineBlock(entry, [&] ALWAYS_INLINE_LAMBDA {
+                Node* thisValue = addToGraph(ToThis,
+                    OpInfo(ECMAMode::strict()),
+                    OpInfo(profile->m_thisValueProfile.m_prediction),
+                    get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
 
-                {
-                    m_currentBlock = bbLoopExitReturnA;
-                    clearCaches();
-                    // keepUsesOfCurrentInstructionAlive...
-                    setResult(A);
-                    // TODO: do we need to emit a Return here?
-                    flushForTerminal();
-                }
+                // ToObject
+                unsigned errorStringIndex = UINT32_MAX; // TODO
+                Node* O = addToGraph(ToObject,
+                    OpInfo(errorStringIndex),
+                    OpInfo(profile->m_toObjectValueProfile.m_prediction),
+                    thisValue);
+                exitOK();
 
-                {
-                    m_currentBlock = bbLoopBodyHasProp;
-                    clearCaches();
-                    // keepUsesOfCurrentInstructionAlive...
-                    // Node* kPresent = addToGraph(HasOwnProperty, O, k);
-                    // TODO
+                // ToLength
+                Node* len = addToGraph(ToLength,
+                    OpInfo(0),
+                    OpInfo(profile->m_toLengthValueProfile.m_prediction),
+                    O);
+                exitOK();
 
-                    ArrayMode arrayMode = getArrayMode(Array::Read); // TODO: from profile
-                    set(scratch, addToGraph(InByVal, OpInfo(arrayMode.asWord()), O, get(k)));
-                    // set(scratch, addToGraph(status.isMegamorphic() ? InByValMegamorphic : InByVal, OpInfo(arrayMode.asWord()), base, property));
+                // IsCallable
+                Node* _callable = addToGraph(IsCallable, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+                addBranch(_callable, bbAllocations, bbThrowTypeError);
 
-                    addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
-                }
+                defineBlock(bbThrowTypeError, [&] ALWAYS_INLINE_LAMBDA {
+                    LazyJSValue _errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
+                    OpInfo _info(m_graph.m_lazyJSValues.add(_errorString));
+                    Node* _errorMessage = addToGraph(LazyJSConstant, _info);
+                    addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
+                    // flushForTerminal();
+                });
+                defineBlock(bbAllocations, [&] ALWAYS_INLINE_LAMBDA {
+                    Node* A = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), O);
+                    set(k, jsConstant(jsNumber(0)));
+                    set(to, jsConstant(jsNumber(0)));
+                    set(scratch, jsConstant(jsUndefined()));
+                    addJump(bbLoopHeader);
+                    // flushForTerminal();
 
-                {
-                    m_currentBlock = bbLoopBodyIncK;
-                    clearCaches();
-                    set(k, addToGraph(ArithAdd, get(k), jsConstant(jsNumber(1))));
-                    addToGraph(Jump, OpInfo(bbLoopHeader));
-                }
+                    defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
+                        Node* _compare = addToGraph(CompareGreaterEq, get(k), len);
+                        addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
 
-                {
-                    m_currentBlock = bbLoopBodyCheck;
-                    clearCaches();
-                    addVarArgChild(O);
-                    addVarArgChild(get(k));
-                    addVarArgChild(nullptr); // copied from op_get_by_val
-                    Node* kValue = addToGraph(Node::VarArg, GetByVal,
-                        OpInfo(arrayMode.asWord()),
-                        OpInfo(profile->m_getByValValueProfile.m_prediction));
-                    m_exitOK = false;
-                    // TODO: do we need m_slowGetByVal here?
-                    // m_graph.m_slowGetByVal.add(kValue);
-                    // TODO: handle call
-                    // JSFunction* callbackFunction = jsDynamicCast<JSFunction*>(callback);
-                    // RELEASE_ASSERT(callbackFunction);
+                        defineBlock(bbLoopExitReturnA, [&] ALWAYS_INLINE_LAMBDA {
+                            setResult(A);
+                            addJump(continuation);
+                        });
 
-                    Vector<Node*> arguments;
-                    arguments.append(thisArg);
-                    arguments.append(kValue);
-                    arguments.append(get(k));
-                    arguments.append(O);
+                        defineBlock(bbLoopBodyHasProp, [&] ALWAYS_INLINE_LAMBDA {
+                            ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+                            set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), O, get(k)));
+                            addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
 
-                    int newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
-                    newRegisterOffset -= (argumentCountIncludingThis + 4 + 1); // args + return pc
-                    newRegisterOffset -= CallFrame::headerSizeInRegisters;
+                            defineBlock(bbLoopBodyCheck, [&] ALWAYS_INLINE_LAMBDA {
+                                addVarArgChild(O);
+                                addVarArgChild(get(k));
+                                addVarArgChild(nullptr);
+                                Node* kValue = addToGraph(Node::VarArg, GetByVal,
+                                    OpInfo(arrayMode2.asWord()),
+                                    OpInfo(profile->m_getByValValueProfile.m_prediction));
+                                Vector<Node*> _arguments;
+                                _arguments.append(get(virtualRegisterForArgumentIncludingThis(2, registerOffset))); // thisArg
+                                _arguments.append(kValue);
+                                _arguments.append(get(k));
+                                _arguments.append(O);
 
-                    newRegisterOffset = -WTF::roundUpToMultipleOf(stackAlignmentRegisters(), -newRegisterOffset);
+                                int _newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
+                                _newRegisterOffset -= (argumentCountIncludingThis + 4 + 1); // args + return pc
+                                _newRegisterOffset -= CallFrame::headerSizeInRegisters;
+                                _newRegisterOffset = -WTF::roundUpToMultipleOf(stackAlignmentRegisters(), -_newRegisterOffset);
 
-                    ensureLocals(m_inlineStackTop->remapOperand(VirtualRegister(newRegisterOffset)).toLocal());
+                                ensureLocals(m_inlineStackTop->remapOperand(VirtualRegister(_newRegisterOffset)).toLocal());
 
-                    unsigned currentArgumentIndex = 0;
-                    for (Node* argument : arguments)
-                        set(virtualRegisterForArgumentIncludingThis(currentArgumentIndex++, newRegisterOffset), argument, ImmediateNakedSet);
+                                unsigned _currentArgumentIndex = 0;
+                                for (Node* argument : _arguments)
+                                    set(virtualRegisterForArgumentIncludingThis(_currentArgumentIndex++, _newRegisterOffset), argument, ImmediateNakedSet);
 
-                    Terminality terminality = handleCall(
-                        scratch,
-                        callOp,
-                        InlineCallFrame::Call,
-                        osrExitIndex,
-                        callback,
-                        4,
-                        newRegisterOffset,
-                        // CallLinkStatus(CallVariant(callbackFunction)),
-                        CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
-                        profile->m_callbackResValueProfile.m_prediction,
-                        nullptr);
-                    // RELEASE_ASSERT(terminality == NonTerminal); // TODO
-                    UNUSED_VARIABLE(terminality);
-                    Node* toBooleanResult = addToGraph(ToBoolean, get(scratch));
-                    addBranch(toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
+                                Terminality _terminality = handleCall(
+                                    scratch,
+                                    Call,
+                                    InlineCallFrame::Call,
+                                    osrExitIndex, // TODO
+                                    get(virtualRegisterForArgumentIncludingThis(1, registerOffset)),
+                                    4,
+                                    _newRegisterOffset,
+                                    CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
+                                    profile->m_callbackResValueProfile.m_prediction,
+                                    nullptr);
+                                RELEASE_ASSERT(_terminality == NonTerminal);
+                                Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
+                                addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
 
-                    {
-                        m_currentBlock = bbLoopBodySetProp;
-                        clearCaches();
-                        // TODO: addToGraph(PutByVal); ...
+                                defineBlock(bbLoopBodySetProp, [&] ALWAYS_INLINE_LAMBDA {
+                                    ArrayMode _arrayMode3 = getArrayMode(Array::Write);
 
+                                    addVarArgChild(A);
+                                    addVarArgChild(get(to));
+                                    addVarArgChild(kValue);
+                                    addVarArgChild(nullptr); // Leave room for property storage.
+                                    addVarArgChild(nullptr); // Leave room for length.
+                                    // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
 
-                        // ArrayMode arrayMode = getArrayMode(bytecode.metadata(codeBlock).m_arrayProfile, Array::Write);
-                        ArrayMode arrayMode = getArrayMode(Array::Write); // TODO: this should probably come from profile->m_arrayProfile or similar
+                                    Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode3.asWord()), OpInfo(ECMAMode::StrictMode));
+                                    // m_exitOK = false;
+                                    UNUSED_VARIABLE(putByVal);
 
-                        addVarArgChild(A);
-                        addVarArgChild(get(to));
-                        addVarArgChild(kValue);
-                        addVarArgChild(nullptr); // Leave room for property storage.
-                        addVarArgChild(nullptr); // Leave room for length.
-                        // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
-                        Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(arrayMode.asWord()), OpInfo(ECMAMode::StrictMode));
-                        m_exitOK = false; // PutByVal and PutByValDirect must be treated as if they clobber exit state, since FixupPhase may make them generic.
-                        //     if (!status.isMegamorphic() && status.observedStructureStubInfoSlowPath())
-                        //        m_graph.m_slowPutByVal.add(putByVal);
-                        UNUSED_VARIABLE(putByVal);
+                                    addToGraph(ExitOK);
+                                    set(to, addToGraph(Inc, get(to)));
+                                    addJump(bbLoopBodyIncK);
+                                    // bbLoopBodyIncK defined below
+                                });
+                                // bbLoopBodyIncK defined below
+                            });
 
-                        Node* arithAddRes = addToGraph(ArithAdd, get(to), jsConstant(jsNumber(1)));
-                        set(to, arithAddRes);
-                        addToGraph(Jump, OpInfo(bbLoopBodyIncK));
-                    }
-                }
+                            defineBlock(bbLoopBodyIncK, [&] ALWAYS_INLINE_LAMBDA {
+                                set(k, addToGraph(Inc, get(k)));
+                                addJump(bbLoopHeader);
+                                // bbLoopHeader defined up
+                            });
+                        });
+                    });
+                });
+            });
 
-            }
+            defineBlock(continuation, [&] ALWAYS_INLINE_LAMBDA {
+                m_currentIndex = oldIndex;
+            });
 
-
-            return CallOptimizationResult::Inlined; // TODO
+            return CallOptimizationResult::Inlined;
         }
 
 

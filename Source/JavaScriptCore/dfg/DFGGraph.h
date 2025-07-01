@@ -43,6 +43,7 @@
 #include <wtf/BitVector.h>
 #include <wtf/GenericHashKey.h>
 #include <wtf/HashMap.h>
+#include <wtf/JSONValues.h>
 #include <wtf/StackCheck.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/Vector.h>
@@ -308,6 +309,8 @@ public:
     }
 
     void dump(PrintStream&, DumpContext*);
+
+    Ref<JSON::Object> dumpJSON();
 
     bool terminalsAreValid();
     

@@ -62,6 +62,9 @@ struct InlineCallFrame {
         ProxyObjectInCall,
         BoundFunctionCall,
         BoundFunctionTailCall,
+
+        // Native builtins
+        // NativeBuiltinCall,
     };
     static constexpr unsigned bitWidthOfKind = 4;
 
@@ -84,6 +87,8 @@ struct InlineCallFrame {
         case Construct:
         case ConstructVarargs:
             return CallMode::Construct;
+        // case NativeBuiltinCall:
+        //     break; // TODO: see if this is needed
         }
         RELEASE_ASSERT_NOT_REACHED();
     }
@@ -132,6 +137,8 @@ struct InlineCallFrame {
         case Construct:
         case ConstructVarargs:
             return CodeForConstruct;
+        // case NativeBuiltinCall:
+        //     break; // TODO: see if this is needed
         }
         RELEASE_ASSERT_NOT_REACHED();
     }

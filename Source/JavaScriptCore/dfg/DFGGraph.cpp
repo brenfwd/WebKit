@@ -445,6 +445,142 @@ void Graph::dump(PrintStream& out, const char* prefixStr, Node* node, DumpContex
     out.print("\n"_s);
 }
 
+Ref<JSON::Object> Graph::dumpJSON()
+{
+    auto dumpJSONArray = [](auto source) -> Ref<JSON::Array> {
+        auto arr = JSON::Array::create();
+        for (auto it = source.begin(); it != source.end(); ++it)
+            arr->pushString(toString(*it));
+        return arr;
+    };
+
+    Ref<JSON::Object> obj = JSON::Object::create();
+
+    obj->setString("codeblock"_s, toString(CodeBlockWithJITType(m_codeBlock, JITType::DFGJIT)));
+    obj->setObject("metadata"_s, [&] ALWAYS_INLINE_LAMBDA {
+        auto metadata = JSON::Object::create();
+        metadata->setString("fixpointState"_s, toString(m_fixpointState));
+        metadata->setString("form"_s, toString(m_form));
+        metadata->setString("unificationState"_s, toString(m_unificationState));
+        metadata->setString("refCountState"_s, toString(m_refCountState));
+        return metadata;
+    }());
+    if (m_form == SSA) {
+        obj->setObject("ssaInfo"_s, [&] ALWAYS_INLINE_LAMBDA {
+            auto ssaInfo = JSON::Object::create();
+
+            auto entrypoints = JSON::Array::create();
+            for (unsigned entrypointIndex = 0; entrypointIndex < m_argumentFormats.size(); ++entrypointIndex) {
+                entrypoints->pushObject([&] ALWAYS_INLINE_LAMBDA {
+                    auto ep = JSON::Object::create();
+                    ep->setArray("argumentFormats"_s, dumpJSONArray(m_argumentFormats[entrypointIndex]));
+                    return ep;
+                }());
+            }
+            ssaInfo->setArray("entrypoints"_s, entrypoints);
+            return ssaInfo;
+        }());
+        obj->setValue("rootToArguments"_s, JSON::Object::null());
+    } else {
+        obj->setValue("ssaInfo"_s, JSON::Object::null());
+        obj->setObject("rootToArguments"_s, [&] ALWAYS_INLINE_LAMBDA {
+            auto rootToArguments = JSON::Object::create();
+            for (const auto& pair : m_rootToArguments)
+                rootToArguments->setArray(toString(pair.key->index), dumpJSONArray(pair.value));
+            return rootToArguments;
+        }());
+    }
+
+    obj->setArray("blocks"_s, [&] ALWAYS_INLINE_LAMBDA {
+        auto blocks = JSON::Array::create();
+
+        // Node* lastNode = nullptr;
+        for (size_t b = 0; b < m_blocks.size(); ++b) {
+            BasicBlock* block = m_blocks[b].get();
+            blocks->pushObject([&] ALWAYS_INLINE_LAMBDA {
+                auto blockObj = JSON::Object::create();
+
+                // TODO: dumpBlockHeader
+                blockObj->setString("states"_s, toString(block->cfaStructureClobberStateAtHead));
+                blockObj->setBoolean("currentlyCFAUnreachable"_s, !block->cfaHasVisited); // TODO: naming
+                blockObj->setBoolean("CFAUnreachable"_s, !block->intersectionOfCFAHasVisited); // TODO: naming
+
+                // SSA/Non-SSA info
+                switch (m_form) {
+                case LoadStore:
+                case ThreadedCPS: {
+                    blockObj->setObject("nonSSAInfo"_s, [&] ALWAYS_INLINE_LAMBDA {
+                        auto nonSSAInfo = JSON::Object::create();
+                        nonSSAInfo->setString("valuesAtHead"_s, toString(block->valuesAtHead));
+                        nonSSAInfo->setString("intersectionOfPastValuesAtHead"_s, toString(block->intersectionOfPastValuesAtHead));
+                        nonSSAInfo->setString("variablesAtHead"_s, toString(block->variablesAtHead));
+                        return nonSSAInfo;
+                    }());
+                    blockObj->setValue("ssaInfo"_s, JSON::Object::null());
+                    break;
+                }
+                case SSA: {
+                    blockObj->setValue("nonSSAInfo"_s, JSON::Object::null());
+                    blockObj->setObject("ssaInfo"_s, [&] ALWAYS_INLINE_LAMBDA {
+                        auto ssaInfo = JSON::Object::create();
+                        ssaInfo->setString("availabilityAtHead"_s, toString(block->ssa->availabilityAtHead));
+                        // ssaInfo->setString("liveAtHead"_s, toString(block->ssa->liveAtHead));
+                        // ssaInfo->setString("valuesAtHead"_s, toString(nodeValuePairListDump(block->ssa->valuesAtHead))); // TODO: add custom JSON impl for this
+                        return ssaInfo;
+                    }());
+                    break;
+                }
+                }
+
+                blockObj->setArray("nodes"_s, [&] ALWAYS_INLINE_LAMBDA {
+                    auto nodesArr = JSON::Array::create();
+                    for (size_t i = 0; i < block->size(); ++i) {
+                        // code origin...
+                        Node* node = block->at(i);
+                        // if (!node->origin.semantic)
+                        //     continue;
+                        nodesArr->pushObject([&] ALWAYS_INLINE_LAMBDA {
+                            auto nodeObj = JSON::Object::create();
+
+                            nodeObj->setInteger("index"_s, node->index());
+                            // nodeObj->setString("op"_s, toString(node->op()));
+
+                            unsigned refCount = node->refCount();
+                            bool mustGenerate = node->mustGenerate();
+                            if (mustGenerate)
+                                --refCount;
+                            nodeObj->setInteger("refCount"_s, refCount);
+                            nodeObj->setBoolean("mustGenerate"_s, mustGenerate);
+
+                            if (node->hasResult() && node->hasVirtualRegister() && node->virtualRegister().isValid())
+                                nodeObj->setString("virtualRegister"_s, toString(node->virtualRegister()));
+                            else
+                                nodeObj->setValue("virtualRegister"_s, JSON::Object::null());
+
+                            nodeObj->setString("opName"_s, opName(node->op()));
+                            // TODO: add other properties here
+                            WTF::StringPrintStream sps;
+                            dump(sps, nullptr, node, nullptr);
+                            nodeObj->setString("dump"_s, sps.toString());
+
+                            return nodeObj;
+                        }());
+                    }
+                    return nodesArr;
+                }());
+
+
+                return blockObj;
+            }());
+        }
+
+        return blocks;
+    }());
+
+
+    return obj;
+}
+
 bool Graph::terminalsAreValid()
 {
     for (BasicBlock* block : blocksInNaturalOrder()) {
@@ -565,6 +701,13 @@ void Graph::dumpBlockHeader(PrintStream& out, const char* prefixStr, BasicBlock*
 
 void Graph::dump(PrintStream& out, DumpContext* context)
 {
+    if (Options::dumpGraphJSON()) {
+        auto obj = dumpJSON();
+        auto str = obj->toJSONString();
+        out.print(str);
+        out.print("\n");
+        return;
+    }
     Prefix& prefix = m_prefix;
     DumpContext myContext;
     myContext.graph = this;

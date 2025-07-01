@@ -160,6 +160,7 @@ bool hasCapacityToUseLargeGigacage();
     v(Bool, dumpBytecodeAtDFGTime, false, Normal, "dumps bytecode of JS function being DFG compiled"_s) \
     v(Bool, dumpGraphAfterParsing, false, Normal, nullptr) \
     v(Bool, dumpGraphAtEachPhase, false, Normal, nullptr) \
+    v(Bool, dumpGraphJSON, false, Normal, "dumps graph using JSON format"_s) \
     v(Bool, dumpDFGGraphAtEachPhase, false, Normal, "dumps the DFG graph at each phase of DFG compilation (note this excludes DFG graphs during FTL compilation)"_s) \
     v(Bool, dumpDFGFTLGraphAtEachPhase, false, Normal, "dumps the DFG graph at each phase of DFG compilation when compiling FTL code"_s) \
     v(Bool, dumpB3GraphAtEachPhase, false, Normal, "dumps the B3 graph at each phase of compilation"_s) \

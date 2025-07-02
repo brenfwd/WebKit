@@ -2765,6 +2765,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     // flushForTerminal();
 
                     defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
+                        exitOK();
                         Node* _compare = addToGraph(CompareGreaterEq, get(k), len);
                         addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
 
@@ -2775,10 +2776,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                         defineBlock(bbLoopBodyHasProp, [&] ALWAYS_INLINE_LAMBDA {
                             ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+                            exitOK(); // for InByVal
                             set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), O, get(k)));
                             addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
 
                             defineBlock(bbLoopBodyCheck, [&] ALWAYS_INLINE_LAMBDA {
+                                exitOK();
                                 addVarArgChild(O);
                                 addVarArgChild(get(k));
                                 addVarArgChild(nullptr);
@@ -2827,11 +2830,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                                     addVarArgChild(nullptr); // Leave room for length.
                                     // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
 
+                                    exitOK();
                                     Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode3.asWord()), OpInfo(ECMAMode::StrictMode));
                                     // m_exitOK = false;
                                     UNUSED_VARIABLE(putByVal);
 
-                                    addToGraph(ExitOK);
+                                    exitOK();
                                     set(to, addToGraph(Inc, get(to)));
                                     addJump(bbLoopBodyIncK);
                                     // bbLoopBodyIncK defined below
@@ -2840,6 +2844,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                             });
 
                             defineBlock(bbLoopBodyIncK, [&] ALWAYS_INLINE_LAMBDA {
+                                exitOK();
                                 set(k, addToGraph(Inc, get(k)));
                                 addJump(bbLoopHeader);
                                 // bbLoopHeader defined up

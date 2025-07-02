@@ -2714,15 +2714,20 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
             dataLogLn("bforward - ArrayFilterIntrinsic #########################################################");
 
-            insertChecks();
-            ensureTmps(5);
 
-            addToGraph(Jump, OpInfo(entry));
-            flushForTerminal();
-
+            ensureTmps(7);
             auto k = Operand::tmp(0);
             auto to = Operand::tmp(1);
             auto scratch = Operand::tmp(2);
+            auto obj = Operand::tmp(3);
+            auto len = Operand::tmp(4);
+            auto arr = Operand::tmp(5);
+            auto val = Operand::tmp(6);
+
+            insertChecks();
+
+            addToGraph(Jump, OpInfo(entry));
+            flushForTerminal();
 
             defineBlock(entry, [&] ALWAYS_INLINE_LAMBDA {
                 Node* thisValue = addToGraph(ToThis,
@@ -2732,126 +2737,132 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 // ToObject
                 unsigned errorStringIndex = UINT32_MAX; // TODO
-                Node* O = addToGraph(ToObject,
+                Node* _obj = addToGraph(ToObject,
                     OpInfo(errorStringIndex),
                     OpInfo(profile->m_toObjectValueProfile.m_prediction),
                     thisValue);
                 exitOK();
+                set(obj, _obj);
 
                 // ToLength
-                Node* len = addToGraph(ToLength,
+                exitOK();
+                Node* _len = addToGraph(ToLength,
                     OpInfo(0),
                     OpInfo(profile->m_toLengthValueProfile.m_prediction),
-                    O);
-                exitOK();
+                    _obj);
+                set(len, _len);
 
                 // IsCallable
+                exitOK();
                 Node* _callable = addToGraph(IsCallable, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
                 addBranch(_callable, bbAllocations, bbThrowTypeError);
+            });
 
-                defineBlock(bbThrowTypeError, [&] ALWAYS_INLINE_LAMBDA {
-                    LazyJSValue _errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
-                    OpInfo _info(m_graph.m_lazyJSValues.add(_errorString));
-                    Node* _errorMessage = addToGraph(LazyJSConstant, _info);
-                    addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
-                    // flushForTerminal();
-                });
-                defineBlock(bbAllocations, [&] ALWAYS_INLINE_LAMBDA {
-                    Node* A = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), O);
-                    set(k, jsConstant(jsNumber(0)));
-                    set(to, jsConstant(jsNumber(0)));
-                    set(scratch, jsConstant(jsUndefined()));
-                    addJump(bbLoopHeader);
-                    // flushForTerminal();
+            defineBlock(bbThrowTypeError, [&] ALWAYS_INLINE_LAMBDA {
+                LazyJSValue _errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
+                OpInfo _info(m_graph.m_lazyJSValues.add(_errorString));
+                Node* _errorMessage = addToGraph(LazyJSConstant, _info);
+                addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
+                // flushForTerminal();
+            });
 
-                    defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
-                        exitOK();
-                        Node* _compare = addToGraph(CompareGreaterEq, get(k), len);
-                        addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
+            defineBlock(bbAllocations, [&] ALWAYS_INLINE_LAMBDA {
+                Node* _arr = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), get(obj));
+                set(arr, _arr);
+                set(k, jsConstant(jsNumber(0)));
+                set(to, jsConstant(jsNumber(0)));
+                // set(scratch, jsConstant(jsUndefined()));
+                addJump(bbLoopHeader);
+                // flushForTerminal();
+            });
 
-                        defineBlock(bbLoopExitReturnA, [&] ALWAYS_INLINE_LAMBDA {
-                            setResult(A);
-                            addJump(continuation);
-                        });
+            defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
+                exitOK();
+                Node* _compare = addToGraph(CompareGreaterEq, get(k), get(len));
+                addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
+            });
 
-                        defineBlock(bbLoopBodyHasProp, [&] ALWAYS_INLINE_LAMBDA {
-                            ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
-                            exitOK(); // for InByVal
-                            set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), O, get(k)));
-                            addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
+            defineBlock(bbLoopExitReturnA, [&] ALWAYS_INLINE_LAMBDA {
+                setResult(get(arr));
+                addJump(continuation);
+            });
 
-                            defineBlock(bbLoopBodyCheck, [&] ALWAYS_INLINE_LAMBDA {
-                                exitOK();
-                                addVarArgChild(O);
-                                addVarArgChild(get(k));
-                                addVarArgChild(nullptr);
-                                Node* kValue = addToGraph(Node::VarArg, GetByVal,
-                                    OpInfo(arrayMode2.asWord()),
-                                    OpInfo(profile->m_getByValValueProfile.m_prediction));
-                                Vector<Node*> _arguments;
-                                _arguments.append(get(virtualRegisterForArgumentIncludingThis(2, registerOffset))); // thisArg
-                                _arguments.append(kValue);
-                                _arguments.append(get(k));
-                                _arguments.append(O);
+            defineBlock(bbLoopBodyHasProp, [&] ALWAYS_INLINE_LAMBDA {
+                ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+                exitOK(); // for InByVal
+                set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
+                addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
+            });
 
-                                int _newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
-                                _newRegisterOffset -= (argumentCountIncludingThis + 4 + 1); // args + return pc
-                                _newRegisterOffset -= CallFrame::headerSizeInRegisters;
-                                _newRegisterOffset = -WTF::roundUpToMultipleOf(stackAlignmentRegisters(), -_newRegisterOffset);
+            defineBlock(bbLoopBodyCheck, [&] ALWAYS_INLINE_LAMBDA {
+                ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+                exitOK();
+                addVarArgChild(get(obj));
+                addVarArgChild(get(k));
+                addVarArgChild(nullptr);
+                Node* _kValue = addToGraph(Node::VarArg, GetByVal,
+                    OpInfo(arrayMode2.asWord()),
+                    OpInfo(profile->m_getByValValueProfile.m_prediction));
+                set(val, _kValue);
+                Vector<Node*> _arguments;
+                _arguments.append(get(virtualRegisterForArgumentIncludingThis(2, registerOffset))); // thisArg
+                _arguments.append(_kValue);
+                _arguments.append(get(k));
+                _arguments.append(get(obj));
 
-                                ensureLocals(m_inlineStackTop->remapOperand(VirtualRegister(_newRegisterOffset)).toLocal());
+                int _newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
+                _newRegisterOffset -= (argumentCountIncludingThis + 4 + 1); // args + return pc
+                _newRegisterOffset -= CallFrame::headerSizeInRegisters;
+                _newRegisterOffset = -WTF::roundUpToMultipleOf(stackAlignmentRegisters(), -_newRegisterOffset);
 
-                                unsigned _currentArgumentIndex = 0;
-                                for (Node* argument : _arguments)
-                                    set(virtualRegisterForArgumentIncludingThis(_currentArgumentIndex++, _newRegisterOffset), argument, ImmediateNakedSet);
+                ensureLocals(m_inlineStackTop->remapOperand(VirtualRegister(_newRegisterOffset)).toLocal());
 
-                                Terminality _terminality = handleCall(
-                                    scratch,
-                                    Call,
-                                    InlineCallFrame::Call,
-                                    osrExitIndex, // TODO
-                                    get(virtualRegisterForArgumentIncludingThis(1, registerOffset)),
-                                    4,
-                                    _newRegisterOffset,
-                                    CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
-                                    profile->m_callbackResValueProfile.m_prediction,
-                                    nullptr);
-                                RELEASE_ASSERT(_terminality == NonTerminal);
-                                Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
-                                addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
+                unsigned _currentArgumentIndex = 0;
+                for (Node* argument : _arguments)
+                    set(virtualRegisterForArgumentIncludingThis(_currentArgumentIndex++, _newRegisterOffset), argument, ImmediateNakedSet);
 
-                                defineBlock(bbLoopBodySetProp, [&] ALWAYS_INLINE_LAMBDA {
-                                    ArrayMode _arrayMode3 = getArrayMode(Array::Write);
+                Terminality _terminality = handleCall(
+                    scratch,
+                    Call,
+                    InlineCallFrame::Call,
+                    osrExitIndex, // TODO
+                    get(virtualRegisterForArgumentIncludingThis(1, registerOffset)),
+                    4,
+                    _newRegisterOffset,
+                    CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
+                    profile->m_callbackResValueProfile.m_prediction,
+                    nullptr);
+                RELEASE_ASSERT(_terminality == NonTerminal);
+                Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
+                addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
+            });
 
-                                    addVarArgChild(A);
-                                    addVarArgChild(get(to));
-                                    addVarArgChild(kValue);
-                                    addVarArgChild(nullptr); // Leave room for property storage.
-                                    addVarArgChild(nullptr); // Leave room for length.
-                                    // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
+            defineBlock(bbLoopBodySetProp, [&] ALWAYS_INLINE_LAMBDA {
+                ArrayMode _arrayMode3 = getArrayMode(Array::Write);
 
-                                    exitOK();
-                                    Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode3.asWord()), OpInfo(ECMAMode::StrictMode));
-                                    // m_exitOK = false;
-                                    UNUSED_VARIABLE(putByVal);
+                addVarArgChild(get(arr));
+                addVarArgChild(get(to));
+                addVarArgChild(get(val));
+                addVarArgChild(nullptr); // Leave room for property storage.
+                addVarArgChild(nullptr); // Leave room for length.
+                // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
 
-                                    exitOK();
-                                    set(to, addToGraph(Inc, get(to)));
-                                    addJump(bbLoopBodyIncK);
-                                    // bbLoopBodyIncK defined below
-                                });
-                                // bbLoopBodyIncK defined below
-                            });
+                exitOK();
+                Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode3.asWord()), OpInfo(ECMAMode::StrictMode));
+                // m_exitOK = false;
+                UNUSED_VARIABLE(putByVal);
 
-                            defineBlock(bbLoopBodyIncK, [&] ALWAYS_INLINE_LAMBDA {
-                                exitOK();
-                                set(k, addToGraph(Inc, get(k)));
-                                addJump(bbLoopHeader);
-                                // bbLoopHeader defined up
-                            });
-                        });
-                    });
-                });
+                exitOK();
+                set(to, addToGraph(Inc, get(to)));
+                addJump(bbLoopBodyIncK);
+                // bbLoopBodyIncK defined below
+            });
+
+            defineBlock(bbLoopBodyIncK, [&] ALWAYS_INLINE_LAMBDA {
+                exitOK();
+                set(k, addToGraph(Inc, get(k)));
+                addJump(bbLoopHeader);
+                // bbLoopHeader defined up
             });
 
             defineBlock(continuation, [&] ALWAYS_INLINE_LAMBDA {

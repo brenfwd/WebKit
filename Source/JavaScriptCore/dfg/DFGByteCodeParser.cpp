@@ -2651,6 +2651,9 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
         }
 
         case ArrayFilterIntrinsic: {
+            if (argumentCountIncludingThis < 2)
+                return CallOptimizationResult::DidNothing;
+
             JSFunction* function = variant.function();
             if (!function || !function->rareData())
                 return CallOptimizationResult::DidNothing;
@@ -2715,7 +2718,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             dataLogLn("bforward - ArrayFilterIntrinsic #########################################################");
 
 
-            ensureTmps(7);
+            ensureTmps(10);
             auto k = Operand::tmp(0);
             auto to = Operand::tmp(1);
             auto scratch = Operand::tmp(2);
@@ -2724,17 +2727,31 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             auto arr = Operand::tmp(5);
             auto val = Operand::tmp(6);
 
+            auto argThis = Operand::tmp(7);
+            auto argCallback = Operand::tmp(8);
+            auto argThisArg = Operand::tmp(9);
+
+            exitOK();
             insertChecks();
+
 
             addToGraph(Jump, OpInfo(entry));
             flushForTerminal();
 
             defineBlock(entry, [&] ALWAYS_INLINE_LAMBDA {
+                set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+                set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+                Node* _thisArgSource = (argumentCountIncludingThis >= 3)
+                    ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset))
+                    : jsConstant(jsUndefined());
+                set(argThisArg, _thisArgSource);
+
+                Node* _this = get(argThis);
+                exitOK();
                 Node* thisValue = addToGraph(ToThis,
                     OpInfo(ECMAMode::strict()),
                     OpInfo(profile->m_thisValueProfile.m_prediction),
-                    get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-
+                    _this);
                 // ToObject
                 unsigned errorStringIndex = UINT32_MAX; // TODO
                 Node* _obj = addToGraph(ToObject,
@@ -2754,7 +2771,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 // IsCallable
                 exitOK();
-                Node* _callable = addToGraph(IsCallable, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+                Node* _callable = addToGraph(IsCallable, get(argCallback));
                 addBranch(_callable, bbAllocations, bbThrowTypeError);
             });
 
@@ -2777,6 +2794,27 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             });
 
             defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
+                Node* kPhi = addToGraph(Phi);
+                set(k, kPhi);
+
+                Node* toPhi = addToGraph(Phi);
+                set(to, toPhi);
+
+                Node* arrPhi = addToGraph(Phi);
+                set(arr, arrPhi);
+
+                Node* objPhi = addToGraph(Phi);
+                set(obj, objPhi);
+
+                Node* lenPhi = addToGraph(Phi);
+                set(len, lenPhi);
+
+                Node* callbackPhi = addToGraph(Phi);
+                set(argCallback, callbackPhi);
+
+                Node* thisArgPhi = addToGraph(Phi);
+                set(argThisArg, thisArgPhi);
+
                 exitOK();
                 Node* _compare = addToGraph(CompareGreaterEq, get(k), get(len));
                 addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
@@ -2805,7 +2843,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     OpInfo(profile->m_getByValValueProfile.m_prediction));
                 set(val, _kValue);
                 Vector<Node*> _arguments;
-                _arguments.append(get(virtualRegisterForArgumentIncludingThis(2, registerOffset))); // thisArg
+                _arguments.append(get(argThisArg)); // thisArg
                 _arguments.append(_kValue);
                 _arguments.append(get(k));
                 _arguments.append(get(obj));
@@ -2826,13 +2864,13 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     Call,
                     InlineCallFrame::Call,
                     osrExitIndex, // TODO
-                    get(virtualRegisterForArgumentIncludingThis(1, registerOffset)),
+                    get(argCallback),
                     4,
                     _newRegisterOffset,
                     CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
                     profile->m_callbackResValueProfile.m_prediction,
                     nullptr);
-                RELEASE_ASSERT(_terminality == NonTerminal);
+                RELEASE_ASSERT(_terminality == NonTerminal); // TODO: could return DidNothing here perhaps
                 Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
                 addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
             });

@@ -30,7 +30,7 @@
 #include "ObjectAllocationProfile.h"
 #include "PackedCellPtr.h"
 #include "Watchpoint.h"
-#include "runtime/BuiltinProfiling.h"
+#include "BuiltinProfiling.h"
 
 namespace JSC {
 

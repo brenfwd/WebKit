@@ -2,10 +2,10 @@
 
 #include <variant>
 
-#include "bytecode/ArrayAllocationProfile.h"
-#include "bytecode/ValueProfile.h"
-#include "runtime/ConcurrentJSLock.h"
-#include "wtf/TZoneMalloc.h"
+#include "ArrayAllocationProfile.h"
+#include "ValueProfile.h"
+#include "ConcurrentJSLock.h"
+#include <wtf/TZoneMalloc.h>
 
 namespace JSC::BuiltinProfiling {
 

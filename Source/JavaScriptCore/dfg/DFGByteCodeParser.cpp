@@ -2687,22 +2687,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 addToGraph(Branch, OpInfo(branchData), condition);
                 // flushForTerminal();
             };
-            auto addJump = [&](BasicBlock* blockPtr) ALWAYS_INLINE_LAMBDA {
-                // addToGraph(Jump, OpInfo(blockPtr));
-                addJumpTo(blockPtr);
-                // flushForTerminal();
-            };
-            auto defineBlock = [&](BasicBlock* blockPtr, auto definer) ALWAYS_INLINE_LAMBDA {
-                m_currentBlock = blockPtr;
-                clearCaches();
-                definer();
-            };
             auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
                 m_exitOK = true;
                 addToGraph(ExitOK);
             };
 
-            BasicBlock* entry = allocateUntargetableBlock();
             BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
             BasicBlock* bbAllocations = allocateUntargetableBlock();
             BasicBlock* bbLoopHeader = allocateUntargetableBlock(); // BB4 - break if k >= len
@@ -2734,105 +2723,104 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             exitOK();
             insertChecks();
 
+            set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+            set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+            set(argThisArg, (argumentCountIncludingThis >= 3)
+                ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset))
+                : jsConstant(jsUndefined()));
 
-            addToGraph(Jump, OpInfo(entry));
-            flushForTerminal();
-
-            defineBlock(entry, [&] ALWAYS_INLINE_LAMBDA {
-                set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-                set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
-                Node* _thisArgSource = (argumentCountIncludingThis >= 3)
-                    ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset))
-                    : jsConstant(jsUndefined());
-                set(argThisArg, _thisArgSource);
-
-                Node* _this = get(argThis);
+            {
                 exitOK();
-                Node* thisValue = addToGraph(ToThis,
-                    OpInfo(ECMAMode::strict()),
-                    OpInfo(profile->m_thisValueProfile.m_prediction),
-                    _this);
-                // ToObject
-                unsigned errorStringIndex = UINT32_MAX; // TODO
-                Node* _obj = addToGraph(ToObject,
-                    OpInfo(errorStringIndex),
-                    OpInfo(profile->m_toObjectValueProfile.m_prediction),
-                    thisValue);
+                Node* _thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(argThis));
+                Node* _obj = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), _thisValue);
+
                 exitOK();
                 set(obj, _obj);
 
-                // ToLength
                 exitOK();
-                Node* _len = addToGraph(ToLength,
-                    OpInfo(0),
-                    OpInfo(profile->m_toLengthValueProfile.m_prediction),
-                    _obj);
+                Node* _len = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), _obj);
                 set(len, _len);
 
-                // IsCallable
                 exitOK();
                 Node* _callable = addToGraph(IsCallable, get(argCallback));
                 addBranch(_callable, bbAllocations, bbThrowTypeError);
-            });
+            }
 
-            defineBlock(bbThrowTypeError, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbThrowTypeError;
+                clearCaches();
+
                 LazyJSValue _errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
                 OpInfo _info(m_graph.m_lazyJSValues.add(_errorString));
                 Node* _errorMessage = addToGraph(LazyJSConstant, _info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
-                // flushForTerminal();
-            });
+                flushForTerminal();
+            }
 
-            defineBlock(bbAllocations, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbAllocations;
+                clearCaches();
+
                 Node* _arr = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), get(obj));
                 set(arr, _arr);
                 set(k, jsConstant(jsNumber(0)));
                 set(to, jsConstant(jsNumber(0)));
-                // set(scratch, jsConstant(jsUndefined()));
-                addJump(bbLoopHeader);
-                // flushForTerminal();
-            });
+                addJumpTo(bbLoopHeader);
+            }
 
-            defineBlock(bbLoopHeader, [&] ALWAYS_INLINE_LAMBDA {
-                Node* kPhi = addToGraph(Phi);
-                set(k, kPhi);
 
-                Node* toPhi = addToGraph(Phi);
-                set(to, toPhi);
+            {
+                m_currentBlock = bbLoopHeader;
+                clearCaches();
 
-                Node* arrPhi = addToGraph(Phi);
-                set(arr, arrPhi);
+                // Node* kPhi = addToGraph(Phi);
+                // set(k, kPhi);
 
-                Node* objPhi = addToGraph(Phi);
-                set(obj, objPhi);
+                // Node* toPhi = addToGraph(Phi);
+                // set(to, toPhi);
 
-                Node* lenPhi = addToGraph(Phi);
-                set(len, lenPhi);
+                // Node* arrPhi = addToGraph(Phi);
+                // set(arr, arrPhi);
 
-                Node* callbackPhi = addToGraph(Phi);
-                set(argCallback, callbackPhi);
+                // Node* objPhi = addToGraph(Phi);
+                // set(obj, objPhi);
 
-                Node* thisArgPhi = addToGraph(Phi);
-                set(argThisArg, thisArgPhi);
+                // Node* lenPhi = addToGraph(Phi);
+                // set(len, lenPhi);
+
+                // Node* callbackPhi = addToGraph(Phi);
+                // set(argCallback, callbackPhi);
+
+                // Node* thisArgPhi = addToGraph(Phi);
+                // set(argThisArg, thisArgPhi);
 
                 exitOK();
                 Node* _compare = addToGraph(CompareGreaterEq, get(k), get(len));
                 addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
-            });
+            }
 
-            defineBlock(bbLoopExitReturnA, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbLoopExitReturnA;
+                clearCaches();
+
                 setResult(get(arr));
-                addJump(continuation);
-            });
+                addJumpTo(continuation);
+            }
 
-            defineBlock(bbLoopBodyHasProp, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbLoopBodyHasProp;
+                clearCaches();
+
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
                 exitOK(); // for InByVal
                 set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
                 addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
-            });
+            }
 
-            defineBlock(bbLoopBodyCheck, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbLoopBodyCheck;
+                clearCaches();
+
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
                 exitOK();
                 addVarArgChild(get(obj));
@@ -2863,7 +2851,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     scratch,
                     Call,
                     InlineCallFrame::Call,
-                    osrExitIndex, // TODO
+                    osrExitIndex, // TODO: state machine (enum + side state, probably in new inline call frame type)
                     get(argCallback),
                     4,
                     _newRegisterOffset,
@@ -2873,10 +2861,13 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 RELEASE_ASSERT(_terminality == NonTerminal); // TODO: could return DidNothing here perhaps
                 Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
                 addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
-            });
+            }
 
-            defineBlock(bbLoopBodySetProp, [&] ALWAYS_INLINE_LAMBDA {
-                ArrayMode _arrayMode3 = getArrayMode(Array::Write);
+            {
+                m_currentBlock = bbLoopBodySetProp;
+                clearCaches();
+
+                ArrayMode _arrayMode = getArrayMode(Array::Write);
 
                 addVarArgChild(get(arr));
                 addVarArgChild(get(to));
@@ -2886,26 +2877,29 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
 
                 exitOK();
-                Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode3.asWord()), OpInfo(ECMAMode::StrictMode));
+                Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(_arrayMode.asWord()), OpInfo(ECMAMode::StrictMode));
                 // m_exitOK = false;
                 UNUSED_VARIABLE(putByVal);
 
                 exitOK();
                 set(to, addToGraph(Inc, get(to)));
-                addJump(bbLoopBodyIncK);
-                // bbLoopBodyIncK defined below
-            });
+                addJumpTo(bbLoopBodyIncK);
+            }
 
-            defineBlock(bbLoopBodyIncK, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = bbLoopBodyIncK;
+                clearCaches();
+
                 exitOK();
                 set(k, addToGraph(Inc, get(k)));
-                addJump(bbLoopHeader);
-                // bbLoopHeader defined up
-            });
+                addJumpTo(bbLoopHeader);
+            }
 
-            defineBlock(continuation, [&] ALWAYS_INLINE_LAMBDA {
+            {
+                m_currentBlock = continuation;
+                clearCaches();
                 m_currentIndex = oldIndex;
-            });
+            }
 
             return CallOptimizationResult::Inlined;
         }

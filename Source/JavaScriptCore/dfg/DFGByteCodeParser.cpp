@@ -2721,15 +2721,18 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             auto argThisArg = Operand::tmp(9);
 
             exitOK();
-            insertChecks();
+            dataLogLn("bforward - before insertChecks()");
+            insertChecks(true);
+            dataLogLn("bforward - after insertChecks()");
 
             set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
             set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
             set(argThisArg, (argumentCountIncludingThis >= 3)
                 ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset))
                 : jsConstant(jsUndefined()));
-
             {
+                dataLogLn("bforward - before ToThis/ToObject/ToLength/IsCallable");
+
                 exitOK();
                 Node* _thisValue = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(argThis));
                 Node* _obj = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), _thisValue);
@@ -2744,9 +2747,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK();
                 Node* _callable = addToGraph(IsCallable, get(argCallback));
                 addBranch(_callable, bbAllocations, bbThrowTypeError);
+
+                dataLogLn("bforward - after ToThis/ToObject/ToLength/IsCallable");
             }
 
             {
+                dataLogLn("bforward - bbThrowTypeError BEGIN");
                 m_currentBlock = bbThrowTypeError;
                 clearCaches();
 
@@ -2755,9 +2761,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 Node* _errorMessage = addToGraph(LazyJSConstant, _info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
                 flushForTerminal();
+                dataLogLn("bforward - bbThrowTypeError END");
             }
 
             {
+                dataLogLn("bforward - bbAllocations BEGIN");
                 m_currentBlock = bbAllocations;
                 clearCaches();
 
@@ -2766,10 +2774,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 set(k, jsConstant(jsNumber(0)));
                 set(to, jsConstant(jsNumber(0)));
                 addJumpTo(bbLoopHeader);
+                dataLogLn("bforward - bbAllocations END");
             }
 
 
             {
+                dataLogLn("bforward - bbLoopHeader BEGIN");
                 m_currentBlock = bbLoopHeader;
                 clearCaches();
 
@@ -2797,17 +2807,21 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK();
                 Node* _compare = addToGraph(CompareGreaterEq, get(k), get(len));
                 addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
+                dataLogLn("bforward - bbLoopHeader END");
             }
 
             {
+                dataLogLn("bforward - bbLoopExitReturnA BEGIN");
                 m_currentBlock = bbLoopExitReturnA;
                 clearCaches();
 
                 setResult(get(arr));
                 addJumpTo(continuation);
+                dataLogLn("bforward - bbLoopExitReturnA END");
             }
 
             {
+                dataLogLn("bforward - bbLoopBodyHasProp BEGIN");
                 m_currentBlock = bbLoopBodyHasProp;
                 clearCaches();
 
@@ -2815,9 +2829,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK(); // for InByVal
                 set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
                 addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
+                dataLogLn("bforward - bbLoopBodyHasProp END");
             }
 
             {
+                dataLogLn("bforward - bbLoopBodyCheck BEGIN");
                 m_currentBlock = bbLoopBodyCheck;
                 clearCaches();
 
@@ -2847,6 +2863,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 for (Node* argument : _arguments)
                     set(virtualRegisterForArgumentIncludingThis(_currentArgumentIndex++, _newRegisterOffset), argument, ImmediateNakedSet);
 
+                dataLogLn("bforward - before handleCall");
                 Terminality _terminality = handleCall(
                     scratch,
                     Call,
@@ -2858,12 +2875,15 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
                     profile->m_callbackResValueProfile.m_prediction,
                     nullptr);
+                dataLogLn("bforward - after handleCall");
                 RELEASE_ASSERT(_terminality == NonTerminal); // TODO: could return DidNothing here perhaps
                 Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
                 addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
+                dataLogLn("bforward - bbLoopBodyCheck END");
             }
 
             {
+                dataLogLn("bforward - bbLoopBodySetProp BEGIN");
                 m_currentBlock = bbLoopBodySetProp;
                 clearCaches();
 
@@ -2884,22 +2904,30 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK();
                 set(to, addToGraph(Inc, get(to)));
                 addJumpTo(bbLoopBodyIncK);
+                dataLogLn("bforward - bbLoopBodySetProp END");
             }
 
             {
+                dataLogLn("bforward - bbLoopBodyIncK BEGIN");
                 m_currentBlock = bbLoopBodyIncK;
                 clearCaches();
 
                 exitOK();
                 set(k, addToGraph(Inc, get(k)));
                 addJumpTo(bbLoopHeader);
+                dataLogLn("bforward - bbLoopBodyIncK END");
             }
 
             {
+                dataLogLn("bforward - continuation BEGIN");
                 m_currentBlock = continuation;
                 clearCaches();
                 m_currentIndex = oldIndex;
+                dataLogLn("bforward - continuation END");
             }
+
+            dataLogLn("bforward - case end! return Inlined");
+
 
             return CallOptimizationResult::Inlined;
         }

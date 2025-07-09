@@ -2180,7 +2180,7 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
     return JSValue::encode(result);
 }
 
-ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSFunction* callback, JSValue thisArg)
+ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSObject* callback, JSValue thisArg)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -2192,46 +2192,76 @@ ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& v
     if (length == 0)
         return result;
 
-    CachedCall cachedCall(globalObject, callback, 3);
+    const auto callData = getCallData(callback);
+    ASSERT(callData.type != CallData::Type::None);
+
+    auto doFilter = [&](auto callFunction) ALWAYS_INLINE_LAMBDA {
+        switch (indexingType) {
+        case ALL_INT32_INDEXING_TYPES:
+        case ALL_CONTIGUOUS_INDEXING_TYPES: {
+            auto& butterfly = *array->butterfly();
+            auto data = butterfly.contiguous().data();
+            // TODO: we could check for holes and fall-back to slow path if it is faster:
+            // if (containsHole(data, length)) return { false, {} }; ...
+            for (unsigned i = 0; i < length; ++i) {
+                if (JSValue value = data[i].get(); value) [[likely]] {
+                    JSValue callbackRes = callFunction(thisArg, value, jsNumber(i), array);
+                    // JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, jsNumber(i), array);
+                    if (callbackRes.toBoolean(globalObject))
+                        result->pushInline(globalObject, value);
+                }
+            }
+            break;
+        }
+        case ALL_DOUBLE_INDEXING_TYPES: {
+            auto& butterfly = *array->butterfly();
+            auto data = butterfly.contiguousDouble().data();
+            // TODO: if containsHole...
+            for (unsigned i = 0; i < length; ++i) {
+                if (isHole(data[i])) [[unlikely]]
+                    continue;
+                JSValue value = jsNumber(data[i]);
+                JSValue callbackRes = callFunction(thisArg, value, jsNumber(i), array);
+                // JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, array);
+                if (callbackRes.toBoolean(globalObject))
+                    result->pushInline(globalObject, value);
+            }
+            break;
+        }
+        default:
+            RELEASE_ASSERT_NOT_REACHED();
+        }
+    };
+
+    if (callData.type == CallData::Type::JS) [[likely]] {
+        CachedCall cachedCall(globalObject, jsCast<JSFunction*>(callback), 3);
+        RETURN_IF_EXCEPTION(scope, { });
+        doFilter([&](JSValue thisVal, JSValue value, JSValue i, JSValue thisObj) -> JSValue {
+            return cachedCall.callWithArguments(globalObject, thisVal, value, i, thisObj);
+        });
+    } else {
+        MarkedArgumentBuffer args;
+        doFilter([&](JSValue thisVal, JSValue value, JSValue i, JSValue thisObj) -> JSValue {
+            args.clear();
+            args.append(value);
+            args.append(i);
+            args.append(thisObj);
+            if (args.hasOverflowed()) [[unlikely]] {
+                throwOutOfMemoryError(globalObject, scope);
+                return { };
+            }
+            return call(globalObject, callback, callData, thisVal, args);
+        });
+    }
+
+    // CachedCall cachedCall(globalObject, callback, 3);
+
     // JSArray* resultArray = constructEmptyArray(globalObject, nullptr);
     // result = resultArray;
     // RETURN_IF_EXCEPTION(scope, { });
 
     // dataLogTrace("fastArrayFilter indexingType = ", indexingType);
 
-    switch (indexingType) {
-    case ALL_INT32_INDEXING_TYPES:
-    case ALL_CONTIGUOUS_INDEXING_TYPES: {
-        auto& butterfly = *array->butterfly();
-        auto data = butterfly.contiguous().data();
-        // TODO: we could check for holes and fall-back to slow path if it is faster:
-        // if (containsHole(data, length)) return { false, {} }; ...
-        for (unsigned i = 0; i < length; ++i) {
-            if (JSValue value = data[i].get(); value) [[likely]] {
-                JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, jsNumber(i), array);
-                if (callbackRes.toBoolean(globalObject))
-                    result->pushInline(globalObject, value);
-            }
-        }
-        break;
-    }
-    case ALL_DOUBLE_INDEXING_TYPES: {
-        auto& butterfly = *array->butterfly();
-        auto data = butterfly.contiguousDouble().data();
-        // TODO: if containsHole...
-        for (unsigned i = 0; i < length; ++i) {
-            if (isHole(data[i])) [[unlikely]]
-                continue;
-            JSValue value = jsNumber(data[i]);
-            JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, array);
-            if (callbackRes.toBoolean(globalObject))
-                result->pushInline(globalObject, value);
-        }
-        break;
-    }
-    default:
-        RELEASE_ASSERT_NOT_REACHED();
-    }
 
     RELEASE_AND_RETURN(scope, result);
 }
@@ -2247,17 +2277,14 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
     if (!profile) {
         profile = rareData->allocateBuiltinProfile<BuiltinProfiling::ArrayPrototypeFilterProfile>();
     }
-    ASSERT(profile);
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });
     // TODO: is computeUpdatedPredictionForExtraValue() the correct method?
-    profile->m_thisValueProfile.m_buckets[0] = JSValue::encode(thisValue);
     if (thisValue.isUndefinedOrNull()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "Array.prototype.filter requires that |this| not be null or undefined"_s);
 
     auto* thisObject = thisValue.toObject(globalObject);
-    RETURN_IF_EXCEPTION(scope, { });
     profile->m_toObjectValueProfile.m_buckets[0] = JSValue::encode(thisObject);
 
     uint64_t length = toLength(globalObject, thisObject);
@@ -2276,8 +2303,7 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
         case ALL_INT32_INDEXING_TYPES:
         case ALL_CONTIGUOUS_INDEXING_TYPES:
         case ALL_DOUBLE_INDEXING_TYPES: {
-            JSFunction* callback = jsCast<JSFunction*>(argCallback);
-            JSValue result = fastArrayFilter(globalObject, vm, array, callback, argThisArg);
+            JSValue result = fastArrayFilter(globalObject, vm, array, argCallback.toObject(globalObject), argThisArg);
             RELEASE_AND_RETURN(scope, JSValue::encode(result));
         }
         default:
@@ -2303,21 +2329,48 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
         return { };
     }
 
-    uint64_t nextIndex = 0;
-    CachedCall cachedCall(globalObject, jsCast<JSFunction*>(argCallback), 3);
-    for (uint64_t i = 0; i < length; i++) {
-        if (thisObject->hasProperty(globalObject, i)) [[likely]] {
-            // TODO: switch indexing type and use custom hole checking logic for each type
-            auto fromValue = thisObject->getIndex(globalObject, i);
-            RETURN_IF_EXCEPTION(scope, { });
-            JSValue callbackRes = cachedCall.callWithArguments(globalObject, argThisArg, fromValue, jsNumber(i), thisObject);
-            if (callbackRes.toBoolean(globalObject)) {
-                result->putDirectIndex(globalObject, nextIndex, fromValue, 0, PutDirectIndexShouldThrow);
+    // CachedCall cachedCall(globalObject, jsCast<JSFunction*>(argCallback), 3);
+    auto doFilter = [&](auto callFunction) ALWAYS_INLINE_LAMBDA -> JSValue {
+        uint64_t nextIndex = 0;
+        for (uint64_t i = 0; i < length; i++) {
+            if (thisObject->hasProperty(globalObject, i)) [[likely]] {
+                // TODO: switch indexing type and use custom hole checking logic for each type
+                auto fromValue = thisObject->getIndex(globalObject, i);
                 RETURN_IF_EXCEPTION(scope, { });
-                ++nextIndex;
+                JSValue callbackRes = callFunction(argThisArg, fromValue, jsNumber(i), thisObject);
+                if (callbackRes.toBoolean(globalObject)) {
+                    result->putDirectIndex(globalObject, nextIndex, fromValue, 0, PutDirectIndexShouldThrow);
+                    RETURN_IF_EXCEPTION(scope, { });
+                    ++nextIndex;
+                }
             }
         }
+        return result;
+    };
+
+    const auto callData = getCallData(argCallback);
+    ASSERT(callData.type != CallData::Type::None);
+    if (callData.type == CallData::Type::JS) [[likely]] {
+        CachedCall cachedCall(globalObject, jsCast<JSFunction*>(argCallback), 3);
+        RETURN_IF_EXCEPTION(scope, { });
+        doFilter([&](JSValue thisVal, JSValue value, JSValue i, JSValue thisObj) -> JSValue {
+            return cachedCall.callWithArguments(globalObject, thisVal, value, i, thisObj);
+        });
+    } else {
+        MarkedArgumentBuffer args;
+        doFilter([&](JSValue thisVal, JSValue value, JSValue i, JSValue thisObj) -> JSValue {
+            args.clear();
+            args.append(value);
+            args.append(i);
+            args.append(thisObj);
+            if (args.hasOverflowed()) [[unlikely]] {
+                throwOutOfMemoryError(globalObject, scope);
+                return { };
+            }
+            return call(globalObject, argCallback, callData, thisVal, args);
+        });
     }
+    RETURN_IF_EXCEPTION(scope, { });
 
     RELEASE_AND_RETURN(scope, JSValue::encode(result));
 }

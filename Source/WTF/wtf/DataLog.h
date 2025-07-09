@@ -52,6 +52,12 @@ void dataLogLn(const Types&... values)
     dataLog(values..., "\n");
 }
 
+// TODO(bforward): remove this
+#define dataLogTrace(...) \
+    do { \
+        dataLogLn("trace @ " __FILE_NAME__, ":", __LINE__, "\n\t\033[0;34m", ## __VA_ARGS__, "\033[0m"); \
+    } while (0)
+
 #define dataLogIf(shouldLog, ...) do { \
         using ShouldLogType = std::decay_t<decltype(shouldLog)>; \
         static_assert(std::is_same_v<ShouldLogType, bool> || std::is_enum_v<ShouldLogType>, "You probably meant to pass a bool or enum as dataLogIf's first parameter"); \

@@ -187,6 +187,7 @@ private:
     void makeBlockTargetable(BasicBlock*, BytecodeIndex);
     void addJumpTo(BasicBlock*);
     void addJumpTo(unsigned bytecodeIndex);
+    void addBranch(Node* condition, BasicBlock* trueBlock, BasicBlock* falseBlock);
     // Handle calls. This resolves issues surrounding inlining and intrinsics.
     enum Terminality { Terminal, NonTerminal };
     Terminality handleCall(
@@ -439,9 +440,11 @@ private:
 
     void processSetLocalQueue()
     {
+        dataLogTrace("processSetLocalQueue BEGIN");
         for (unsigned i = 0; i < m_setLocalQueue.size(); ++i)
             m_setLocalQueue[i].execute(this);
         m_setLocalQueue.shrink(0);
+        dataLogTrace("processSetLocalQueue END");
     }
 
     Node* set(Operand operand, Node* value, SetMode setMode = NormalSet)
@@ -1419,18 +1422,29 @@ void ByteCodeParser::addJumpTo(unsigned bytecodeIndex)
     m_inlineStackTop->m_unlinkedBlocks.append(m_currentBlock);
 }
 
+void ByteCodeParser::addBranch(Node* condition, BasicBlock* taken, BasicBlock* notTaken) {
+    ASSERT(!m_currentBlock->terminal());
+    BranchData* branchData = m_graph.m_branchData.add();
+    branchData->taken = BranchTarget(taken);
+    branchData->notTaken = BranchTarget(notTaken);
+    addToGraph(Branch, OpInfo(branchData), condition);
+}
+
 template<typename CallOp>
 ByteCodeParser::Terminality ByteCodeParser::handleCall(const JSInstruction* pc, NodeType op, CallMode callMode, BytecodeIndex osrExitIndex, Node* newTarget)
 {
     auto bytecode = pc->as<CallOp>();
     Node* callTarget = get(calleeFor(bytecode, m_currentIndex.checkpoint()));
+    dataLogTrace("callTarget node = ", callTarget);
     int registerOffset = -static_cast<int>(stackOffsetInRegistersForCall(bytecode, m_currentIndex.checkpoint()));
 
     CallLinkStatus callLinkStatus = CallLinkStatus::computeFor(
         m_inlineStackTop->m_profiledBlock, currentCodeOrigin(),
         m_inlineStackTop->m_baselineMap, m_icContextStack);
+    dataLogTrace("callLinkStatus = ", callLinkStatus);
 
     InlineCallFrame::Kind kind = InlineCallFrame::kindFor(callMode);
+    dataLogTrace("callMode = ", callMode, " --> kind = ", kind);
     ASSERT(osrExitIndex);
 
     return handleCall(destinationFor(bytecode, m_currentIndex.checkpoint(), JITType::DFGJIT), op, kind, osrExitIndex, callTarget,
@@ -1570,8 +1584,10 @@ Node* ByteCodeParser::getArgumentCount()
 
 void ByteCodeParser::emitArgumentPhantoms(int registerOffset, int argumentCountIncludingThis)
 {
+    dataLogTrace("emitArgumentPhantoms BEGIN");
     for (int i = 0; i < argumentCountIncludingThis; ++i)
         addToGraph(Phantom, get(virtualRegisterForArgumentIncludingThis(i, registerOffset)));
+    dataLogTrace("emitArgumentPhantoms END");
 }
 
 template<typename ChecksFunctor>
@@ -2030,11 +2046,14 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
         RELEASE_ASSERT(didInsertChecks);
         // Bound function's slots of them are not important. They are dead at OSR exit.
         // As the same way to the arguments for normal calls, we do not do special things.
+        dataLogTrace("endSpecialCase BEGIN didBoundFunctionInlining = ", didBoundFunctionInlining);
         if (!didBoundFunctionInlining) {
+            dataLogTrace("add Phantom to callTargetNode = ", callTargetNode);
             addToGraph(Phantom, callTargetNode);
             emitArgumentPhantoms(registerOffset, argumentCountIncludingThis);
         }
         inliningBalance--;
+        dataLogTrace("endSpecialCase have continuationBlock = ", !!continuationBlock);
         if (continuationBlock) {
             m_currentIndex = osrExitIndex;
             m_exitOK = true;
@@ -2045,11 +2064,13 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
             } else
                 addJumpTo(continuationBlock);
         }
+        dataLogTrace("endSpecialCase END");
     };
 
     if (callee.internalFunction() || callee.function()) {
         JSObject* function = callee.internalFunction() ? jsCast<JSObject*>(callee.internalFunction()) : jsCast<JSObject*>(callee.function());
         if (handleConstantFunction(callTargetNode, result, function, registerOffset, argumentCountIncludingThis, specializationKind, prediction, newTarget, insertChecksWithAccounting)) {
+            dataLogTrace();
             endSpecialCase();
             return CallOptimizationResult::Inlined;
         }
@@ -2061,8 +2082,10 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
 
     Intrinsic intrinsic = callee.intrinsicFor(specializationKind);
     if (intrinsic != NoIntrinsic) {
+        dataLogTrace("intrinsic = ", intrinsic);
         CallOptimizationResult optimizationResult = handleIntrinsicCall(callTargetNode, result, callee, intrinsic, registerOffset, argumentCountIncludingThis, osrExitIndex, callOp, kind, specializationKind, prediction, insertChecksWithAccounting);
         if (optimizationResult != CallOptimizationResult::DidNothing) {
+            dataLogTrace();
             endSpecialCase();
             return optimizationResult;
         }
@@ -2073,6 +2096,7 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
     if (Options::useDOMJIT()) {
         if (const DOMJIT::Signature* signature = callee.signatureFor(specializationKind)) {
             if (handleDOMJITCall(callTargetNode, result, signature, registerOffset, argumentCountIncludingThis, prediction, insertChecksWithAccounting)) {
+                dataLogTrace();
                 endSpecialCase();
                 return CallOptimizationResult::Inlined;
             }
@@ -2365,6 +2389,7 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleInlining(
         
         Node* myCallTargetNode = getDirect(calleeReg);
         
+        dataLogTrace();
         auto inliningResult = handleCallVariant(
             myCallTargetNode, result, callLinkStatus[i], registerOffset,
             thisArgument, argumentCountIncludingThis, osrExitIndex, callOp, kind, prediction, newTarget,
@@ -2669,6 +2694,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             if (!profile)
                 return CallOptimizationResult::DidNothing;
 
+            profile->updateValueProfiles(m_codeBlock->m_lock);
+
             JSGlobalObject* globalObject = m_graph.globalObjectFor(currentNodeOrigin().semantic);
             if (globalObject->arraySpeciesWatchpointSet().state() != IsWatched
                 || !globalObject->havingABadTimeWatchpointSet().isStillValid()
@@ -2680,13 +2707,6 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             m_graph.watchpoints().addLazily(globalObject->havingABadTimeWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->arrayPrototypeChainIsSaneWatchpointSet());
 
-            auto addBranch = [&](Node* condition, BasicBlock* taken, BasicBlock *notTaken) ALWAYS_INLINE_LAMBDA {
-                BranchData* branchData = m_graph.m_branchData.add();
-                branchData->taken = BranchTarget(taken);
-                branchData->notTaken = BranchTarget(notTaken);
-                addToGraph(Branch, OpInfo(branchData), condition);
-                // flushForTerminal();
-            };
             auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
                 m_exitOK = true;
                 addToGraph(ExitOK);

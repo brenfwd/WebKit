@@ -2180,6 +2180,62 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
     return JSValue::encode(result);
 }
 
+ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSFunction* callback, JSValue thisArg)
+{
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    unsigned length = array->length();
+
+    auto indexingType = array->indexingType();
+    ArrayAllocationProfile profile(indexingType);
+    JSArray* result = constructEmptyArray(globalObject, &profile);
+    if (length == 0)
+        return result;
+
+    CachedCall cachedCall(globalObject, callback, 3);
+    // JSArray* resultArray = constructEmptyArray(globalObject, nullptr);
+    // result = resultArray;
+    // RETURN_IF_EXCEPTION(scope, { });
+
+    // dataLogTrace("fastArrayFilter indexingType = ", indexingType);
+
+    switch (indexingType) {
+    case ALL_INT32_INDEXING_TYPES:
+    case ALL_CONTIGUOUS_INDEXING_TYPES: {
+        auto& butterfly = *array->butterfly();
+        auto data = butterfly.contiguous().data();
+        // TODO: we could check for holes and fall-back to slow path if it is faster:
+        // if (containsHole(data, length)) return { false, {} }; ...
+        for (unsigned i = 0; i < length; ++i) {
+            if (JSValue value = data[i].get(); value) [[likely]] {
+                JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, jsNumber(i), array);
+                if (callbackRes.toBoolean(globalObject))
+                    result->pushInline(globalObject, value);
+            }
+        }
+        break;
+    }
+    case ALL_DOUBLE_INDEXING_TYPES: {
+        auto& butterfly = *array->butterfly();
+        auto data = butterfly.contiguousDouble().data();
+        // TODO: if containsHole...
+        for (unsigned i = 0; i < length; ++i) {
+            if (isHole(data[i])) [[unlikely]]
+                continue;
+            JSValue value = jsNumber(data[i]);
+            JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, array);
+            if (callbackRes.toBoolean(globalObject))
+                result->pushInline(globalObject, value);
+        }
+        break;
+    }
+    default:
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+    RELEASE_AND_RETURN(scope, result);
+}
+
 JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, CallFrame* callFrame))
 {
     VM& vm = globalObject->vm();
@@ -2214,7 +2270,20 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
 
     JSValue argThisArg = callFrame->argument(1);
 
-    // general case
+    if (isJSArray(thisObject) && !holesMustForwardToPrototype(thisObject)) [[likely]] {
+        JSArray* array = asArray(thisObject);
+        switch (array->indexingType()) {
+        case ALL_INT32_INDEXING_TYPES:
+        case ALL_CONTIGUOUS_INDEXING_TYPES:
+        case ALL_DOUBLE_INDEXING_TYPES: {
+            JSFunction* callback = jsCast<JSFunction*>(argCallback);
+            JSValue result = fastArrayFilter(globalObject, vm, array, callback, argThisArg);
+            RELEASE_AND_RETURN(scope, JSValue::encode(result));
+        }
+        default:
+            break;
+        }
+    }
 
     std::pair<SpeciesConstructResult, JSObject*> speciesResult = speciesConstructArray(globalObject, thisObject, 0);
     EXCEPTION_ASSERT(!!scope.exception() == (speciesResult.first == SpeciesConstructResult::Exception));

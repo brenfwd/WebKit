@@ -2180,15 +2180,15 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncToSpliced, (JSGlobalObject* globalObject,
     return JSValue::encode(result);
 }
 
-ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSObject* callback, JSValue thisArg)
+ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSObject* callback, JSValue thisArg, BuiltinProfiling::ArrayPrototypeFilterProfile* profile)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     unsigned length = array->length();
 
     auto indexingType = array->indexingType();
-    ArrayAllocationProfile profile(indexingType);
-    JSArray* result = constructEmptyArray(globalObject, &profile);
+    ArrayAllocationProfile arrayProfile(indexingType);
+    JSArray* result = constructEmptyArray(globalObject, &arrayProfile);
     if (length == 0)
         return result;
 
@@ -2205,8 +2205,9 @@ ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& v
             // if (containsHole(data, length)) return { false, {} }; ...
             for (unsigned i = 0; i < length; ++i) {
                 if (JSValue value = data[i].get(); value) [[likely]] {
+                    profile->m_getByValValueProfile.m_buckets[0] = JSValue::encode(value);
                     JSValue callbackRes = callFunction(thisArg, value, jsNumber(i), array);
-                    // JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, jsNumber(i), array);
+                    profile->m_callbackResValueProfile.m_buckets[0] = JSValue::encode(callbackRes);
                     if (callbackRes.toBoolean(globalObject))
                         result->pushInline(globalObject, value);
                 }
@@ -2221,8 +2222,9 @@ ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& v
                 if (isHole(data[i])) [[unlikely]]
                     continue;
                 JSValue value = jsNumber(data[i]);
+                profile->m_getByValValueProfile.m_buckets[0] = JSValue::encode(value);
                 JSValue callbackRes = callFunction(thisArg, value, jsNumber(i), array);
-                // JSValue callbackRes = cachedCall.callWithArguments(globalObject, thisArg, value, array);
+                profile->m_callbackResValueProfile.m_buckets[0] = JSValue::encode(callbackRes);
                 if (callbackRes.toBoolean(globalObject))
                     result->pushInline(globalObject, value);
             }
@@ -2280,11 +2282,13 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
 
     auto thisValue = callFrame->thisValue().toThis(globalObject, ECMAMode::strict());
     RETURN_IF_EXCEPTION(scope, { });
-    // TODO: is computeUpdatedPredictionForExtraValue() the correct method?
+    profile->m_thisValueProfile.m_buckets[0] = JSValue::encode(thisValue);
+
     if (thisValue.isUndefinedOrNull()) [[unlikely]]
         return throwVMTypeError(globalObject, scope, "Array.prototype.filter requires that |this| not be null or undefined"_s);
 
     auto* thisObject = thisValue.toObject(globalObject);
+    RETURN_IF_EXCEPTION(scope, { });
     profile->m_toObjectValueProfile.m_buckets[0] = JSValue::encode(thisObject);
 
     uint64_t length = toLength(globalObject, thisObject);
@@ -2303,7 +2307,7 @@ JSC_DEFINE_HOST_FUNCTION(arrayProtoFuncFilter, (JSGlobalObject* globalObject, Ca
         case ALL_INT32_INDEXING_TYPES:
         case ALL_CONTIGUOUS_INDEXING_TYPES:
         case ALL_DOUBLE_INDEXING_TYPES: {
-            JSValue result = fastArrayFilter(globalObject, vm, array, argCallback.toObject(globalObject), argThisArg);
+            JSValue result = fastArrayFilter(globalObject, vm, array, argCallback.toObject(globalObject), argThisArg, profile);
             RELEASE_AND_RETURN(scope, JSValue::encode(result));
         }
         default:

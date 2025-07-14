@@ -431,7 +431,6 @@ private:
         DelayedSetLocal delayed(currentCodeOrigin(), operand, value, setMode);
         
         if (setMode == NormalSet) {
-            dataLogTrace("m_setLocalQueue.append(setDirect): DelayedSetLocal operand=", operand, ", value=", value, ", setMode=", setMode);
             m_setLocalQueue.append(delayed);
             return nullptr;
         }
@@ -441,11 +440,9 @@ private:
 
     void processSetLocalQueue()
     {
-        dataLogTrace("processSetLocalQueue BEGIN");
         for (unsigned i = 0; i < m_setLocalQueue.size(); ++i)
             m_setLocalQueue[i].execute(this);
         m_setLocalQueue.shrink(0);
-        dataLogTrace("processSetLocalQueue END");
     }
 
     Node* set(Operand operand, Node* value, SetMode setMode = NormalSet)
@@ -1436,16 +1433,13 @@ ByteCodeParser::Terminality ByteCodeParser::handleCall(const JSInstruction* pc, 
 {
     auto bytecode = pc->as<CallOp>();
     Node* callTarget = get(calleeFor(bytecode, m_currentIndex.checkpoint()));
-    dataLogTrace("callTarget node = ", callTarget);
     int registerOffset = -static_cast<int>(stackOffsetInRegistersForCall(bytecode, m_currentIndex.checkpoint()));
 
     CallLinkStatus callLinkStatus = CallLinkStatus::computeFor(
         m_inlineStackTop->m_profiledBlock, currentCodeOrigin(),
         m_inlineStackTop->m_baselineMap, m_icContextStack);
-    dataLogTrace("callLinkStatus = ", callLinkStatus);
 
     InlineCallFrame::Kind kind = InlineCallFrame::kindFor(callMode);
-    dataLogTrace("callMode = ", callMode, " --> kind = ", kind);
     ASSERT(osrExitIndex);
 
     return handleCall(destinationFor(bytecode, m_currentIndex.checkpoint(), JITType::DFGJIT), op, kind, osrExitIndex, callTarget,
@@ -1585,10 +1579,8 @@ Node* ByteCodeParser::getArgumentCount()
 
 void ByteCodeParser::emitArgumentPhantoms(int registerOffset, int argumentCountIncludingThis)
 {
-    dataLogTrace("emitArgumentPhantoms BEGIN");
     for (int i = 0; i < argumentCountIncludingThis; ++i)
         addToGraph(Phantom, get(virtualRegisterForArgumentIncludingThis(i, registerOffset)));
-    dataLogTrace("emitArgumentPhantoms END");
 }
 
 template<typename ChecksFunctor>
@@ -1916,7 +1908,6 @@ void ByteCodeParser::inlineCall(Node* callTargetNode, Operand result, CallVarian
             Operand argumentToGet = callerStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(index, registerOffset));
             Node* value = getDirect(argumentToGet);
             addToGraph(MovHint, OpInfo(argumentToGet), value);
-            dataLogTrace("m_setLocalQueue.append(inlineCall 1): DelayedSetLocal argumentToGet=", argumentToGet, ", value=", value, ", ImmediateNakedSet");
             m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToGet, value, ImmediateNakedSet });
         }
         break;
@@ -1964,14 +1955,12 @@ void ByteCodeParser::inlineCall(Node* callTargetNode, Operand result, CallVarian
                 Node* value = getDirect(argumentToGet);
                 Operand argumentToSet = m_inlineStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(index));
                 addToGraph(MovHint, OpInfo(argumentToSet), value);
-                dataLogTrace("m_setLocalQueue.append(inlineCall 2): DelayedSetLocal argumentToSet=", argumentToSet, ", value=", value, ", ImmediateNakedSet");
                 m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToSet, value, ImmediateNakedSet });
             }
         }
         for (int index = 0; index < arityFixupCount; ++index) {
             Operand argumentToSet = m_inlineStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(argumentCountIncludingThis + index));
             addToGraph(MovHint, OpInfo(argumentToSet), undefined);
-            dataLogTrace("m_setLocalQueue.append(inlineCall 3): DelayedSetLocal argumentToSet=", argumentToSet, ", value(undefined)=", undefined, ", ImmediateNakedSet");
             m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToSet, undefined, ImmediateNakedSet });
         }
 
@@ -2050,14 +2039,11 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
         RELEASE_ASSERT(didInsertChecks);
         // Bound function's slots of them are not important. They are dead at OSR exit.
         // As the same way to the arguments for normal calls, we do not do special things.
-        dataLogTrace("endSpecialCase BEGIN didBoundFunctionInlining = ", didBoundFunctionInlining);
         if (!didBoundFunctionInlining) {
-            dataLogTrace("add Phantom to callTargetNode = ", callTargetNode);
             addToGraph(Phantom, callTargetNode);
             emitArgumentPhantoms(registerOffset, argumentCountIncludingThis);
         }
         inliningBalance--;
-        dataLogTrace("endSpecialCase have continuationBlock = ", !!continuationBlock);
         if (continuationBlock) {
             m_currentIndex = osrExitIndex;
             m_exitOK = true;
@@ -2068,13 +2054,11 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
             } else
                 addJumpTo(continuationBlock);
         }
-        dataLogTrace("endSpecialCase END");
     };
 
     if (callee.internalFunction() || callee.function()) {
         JSObject* function = callee.internalFunction() ? jsCast<JSObject*>(callee.internalFunction()) : jsCast<JSObject*>(callee.function());
         if (handleConstantFunction(callTargetNode, result, function, registerOffset, argumentCountIncludingThis, specializationKind, prediction, newTarget, insertChecksWithAccounting)) {
-            dataLogTrace();
             endSpecialCase();
             return CallOptimizationResult::Inlined;
         }
@@ -2086,10 +2070,8 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
 
     Intrinsic intrinsic = callee.intrinsicFor(specializationKind);
     if (intrinsic != NoIntrinsic) {
-        dataLogTrace("intrinsic = ", intrinsic);
         CallOptimizationResult optimizationResult = handleIntrinsicCall(callTargetNode, result, callee, intrinsic, registerOffset, argumentCountIncludingThis, osrExitIndex, callOp, kind, specializationKind, prediction, insertChecksWithAccounting);
         if (optimizationResult != CallOptimizationResult::DidNothing) {
-            dataLogTrace();
             endSpecialCase();
             return optimizationResult;
         }
@@ -2100,7 +2082,6 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleCallVariant(Node* c
     if (Options::useDOMJIT()) {
         if (const DOMJIT::Signature* signature = callee.signatureFor(specializationKind)) {
             if (handleDOMJITCall(callTargetNode, result, signature, registerOffset, argumentCountIncludingThis, prediction, insertChecksWithAccounting)) {
-                dataLogTrace();
                 endSpecialCase();
                 return CallOptimizationResult::Inlined;
             }
@@ -2393,7 +2374,6 @@ ByteCodeParser::CallOptimizationResult ByteCodeParser::handleInlining(
         
         Node* myCallTargetNode = getDirect(calleeReg);
         
-        dataLogTrace();
         auto inliningResult = handleCallVariant(
             myCallTargetNode, result, callLinkStatus[i], registerOffset,
             thisArgument, argumentCountIncludingThis, osrExitIndex, callOp, kind, prediction, newTarget,
@@ -2718,18 +2698,17 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
             BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
             BasicBlock* bbAllocations = allocateUntargetableBlock();
-            BasicBlock* bbLoopHeader = allocateUntargetableBlock(); // BB4 - break if k >= len
-            BasicBlock* bbLoopExitReturnA = allocateUntargetableBlock(); // BB5 - return A
-            BasicBlock* bbLoopBodyHasProp = allocateUntargetableBlock(); // BB6 - HasProperty(O, k)
-            BasicBlock* bbLoopBodyIncK = allocateUntargetableBlock(); // BB9 - k++
-            BasicBlock* bbLoopBodyCheck = allocateUntargetableBlock(); // BB7 - get(O, k), callback
-            BasicBlock* bbLoopBodySetProp = allocateUntargetableBlock(); // BB8 - set prop, to++
+            BasicBlock* bbLoopHeader = allocateUntargetableBlock();
+            BasicBlock* bbLoopExitReturnA = allocateUntargetableBlock();
+            BasicBlock* bbLoopBodyHasProp = allocateUntargetableBlock();
+            BasicBlock* bbLoopBodyIncK = allocateUntargetableBlock();
+            BasicBlock* bbLoopBodyCheck = allocateUntargetableBlock();
+            BasicBlock* bbLoopBodySetProp = allocateUntargetableBlock();
             BasicBlock* continuation = allocateUntargetableBlock();
 
             auto oldIndex = m_currentIndex;
 
             dataLogLn("bforward - ArrayFilterIntrinsic #########################################################");
-
 
             ensureTmps(10);
             auto k = Operand::tmp(0);
@@ -2801,28 +2780,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 Node* zero = jsConstant(jsNumber(0));
 
-                // auto bytecode = currentInstruction->as<OpNewArrayWithSpecies>();
-                // SpeculatedType prediction = getPrediction();
-                // auto& metadata = bytecode.metadata(codeBlock);
-                // ArrayAllocationProfile& profile = metadata.m_arrayAllocationProfile;
-                // ArrayMode arrayMode = getArrayMode(metadata.m_arrayProfile, Array::Read);
-                // NewArrayWithSpeciesData data { };
-                // data.arrayMode = arrayMode.asWord();
-                // data.indexingMode = profile.selectIndexingTypeConcurrently();
-                // set(bytecode.m_dst, addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(prediction), Edge(get(bytecode.m_length)), Edge(get(bytecode.m_array), KnownCellUse)));
-                // NEXT_OPCODE(op_new_array_with_species);
-
                 NewArrayWithSpeciesData data;
                 data.arrayMode = arrayMode.asWord();
                 data.indexingMode = profile->m_arrayAllocProfile.selectIndexingTypeConcurrently();
                 Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(obj), KnownCellUse));
 
-                // Node* _arr = addToGraph(NewArrayWithSpecies, zero, get(obj));
-                // _arr->child1() = Edge(_arr->child1().node(), KnownInt32Use);
-
                 set(arr, newArray);
-
-                // addToGraph(Phantom, Edge(zero, KnownInt32Use));
 
                 set(k, zero);
                 set(to, zero);
@@ -2867,7 +2830,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 clearCaches();
 
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
-                exitOK(); // for InByVal
+                exitOK();
                 set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
 
                 processSetLocalQueue();
@@ -2893,7 +2856,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK();
                 set(val, _kValue, ImmediateSetWithFlush);
                 Vector<Node*> _arguments;
-                _arguments.append(get(argThisArg)); // thisArg
+                _arguments.append(get(argThisArg));
                 _arguments.append(_kValue);
                 _arguments.append(get(k));
                 _arguments.append(get(obj));
@@ -2914,7 +2877,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     scratch,
                     Call,
                     InlineCallFrame::Call,
-                    osrExitIndex, // TODO: state machine (enum + side state, probably in new inline call frame type)
+                    osrExitIndex, // TODO
                     get(argCallback),
                     4,
                     _newRegisterOffset,
@@ -2925,7 +2888,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 exitOK();
 
                 processSetLocalQueue();
-                RELEASE_ASSERT(_terminality == NonTerminal); // TODO: could return DidNothing here perhaps
+                RELEASE_ASSERT(_terminality == NonTerminal);
                 Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
 
                 addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
@@ -2972,12 +2935,6 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 clearCaches();
 
                 exitOK();
-                // Node* gotK = get(k);
-                // gotK->child1() = Edge(gotK->child1().node(), KnownInt32Use);
-
-                // Node* inc = addToGraph(Inc, get(k));
-                // inc->child1() = Edge(inc->child1().node(), Int32Use);
-                // set(k, inc);
 
                 Node* one = jsConstant(jsNumber(1));
                 Node* inc = addToGraph(ArithAdd, get(k), one);
@@ -8984,7 +8941,6 @@ void ByteCodeParser::parseBlock(unsigned limit)
 
             for (const std::pair<VirtualRegister, Node*>& pair : localsToSet) {
                 DelayedSetLocal delayed { currentCodeOrigin(), pair.first, pair.second, ImmediateNakedSet };
-                dataLogTrace("m_setLocalQueue.append(op_catch): DelayedSetLocal dest=", pair.first, ", value=", pair.second, ", ImmediateNakedSet");
                 m_setLocalQueue.append(delayed);
             }
 

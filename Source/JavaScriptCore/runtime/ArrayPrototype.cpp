@@ -2257,15 +2257,6 @@ ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& v
         });
     }
 
-    // CachedCall cachedCall(globalObject, callback, 3);
-
-    // JSArray* resultArray = constructEmptyArray(globalObject, nullptr);
-    // result = resultArray;
-    // RETURN_IF_EXCEPTION(scope, { });
-
-    // dataLogTrace("fastArrayFilter indexingType = ", indexingType);
-
-
     RELEASE_AND_RETURN(scope, result);
 }
 

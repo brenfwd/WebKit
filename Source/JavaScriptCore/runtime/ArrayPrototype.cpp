@@ -2187,8 +2187,9 @@ ALWAYS_INLINE static JSValue fastArrayFilter(JSGlobalObject* globalObject, VM& v
     unsigned length = array->length();
 
     auto indexingType = array->indexingType();
-    ArrayAllocationProfile arrayProfile(indexingType);
-    JSArray* result = constructEmptyArray(globalObject, &arrayProfile);
+    // ArrayAllocationProfile arrayProfile(indexingType);
+    profile->m_arrayAllocProfile.initializeIndexingMode(indexingType);
+    JSArray* result = constructEmptyArray(globalObject, &profile->m_arrayAllocProfile);
     if (length == 0)
         return result;
 

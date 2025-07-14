@@ -29,7 +29,7 @@ public:
     ValueProfile m_getByValValueProfile;
     ValueProfile m_callbackResValueProfile;
 
-    // ArrayAllocationProfile m_arrayAllocProfile;
+    ArrayAllocationProfile m_arrayAllocProfile;
     // ValueProfile m_thisArgValueProfile;
     // ValueProfile m_callbackReturnValueProfile;
 

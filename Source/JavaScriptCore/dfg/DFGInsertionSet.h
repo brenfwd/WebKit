@@ -65,7 +65,11 @@ public:
     template<typename... Params>
     Node* insertNode(size_t index, SpeculatedType type, Params... params)
     {
-        return insert(index, m_graph.addNode(type, params...));
+        Node* n = insert(index, m_graph.addNode(type, params...));
+        dataLogTrace("insertionSet.insertNode(): ", n);
+        if (n->index() == 383)
+            dataLogTrace("insertionSet 383"); // bforward - for debugging
+        return n;
     }
     
     Node* insertConstant(size_t index, NodeOrigin, FrozenValue*, NodeType op = JSConstant);

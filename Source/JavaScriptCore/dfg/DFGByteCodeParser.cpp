@@ -431,6 +431,7 @@ private:
         DelayedSetLocal delayed(currentCodeOrigin(), operand, value, setMode);
         
         if (setMode == NormalSet) {
+            dataLogTrace("m_setLocalQueue.append(setDirect): DelayedSetLocal operand=", operand, ", value=", value, ", setMode=", setMode);
             m_setLocalQueue.append(delayed);
             return nullptr;
         }
@@ -1915,6 +1916,7 @@ void ByteCodeParser::inlineCall(Node* callTargetNode, Operand result, CallVarian
             Operand argumentToGet = callerStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(index, registerOffset));
             Node* value = getDirect(argumentToGet);
             addToGraph(MovHint, OpInfo(argumentToGet), value);
+            dataLogTrace("m_setLocalQueue.append(inlineCall 1): DelayedSetLocal argumentToGet=", argumentToGet, ", value=", value, ", ImmediateNakedSet");
             m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToGet, value, ImmediateNakedSet });
         }
         break;
@@ -1962,12 +1964,14 @@ void ByteCodeParser::inlineCall(Node* callTargetNode, Operand result, CallVarian
                 Node* value = getDirect(argumentToGet);
                 Operand argumentToSet = m_inlineStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(index));
                 addToGraph(MovHint, OpInfo(argumentToSet), value);
+                dataLogTrace("m_setLocalQueue.append(inlineCall 2): DelayedSetLocal argumentToSet=", argumentToSet, ", value=", value, ", ImmediateNakedSet");
                 m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToSet, value, ImmediateNakedSet });
             }
         }
         for (int index = 0; index < arityFixupCount; ++index) {
             Operand argumentToSet = m_inlineStackTop->remapOperand(virtualRegisterForArgumentIncludingThis(argumentCountIncludingThis + index));
             addToGraph(MovHint, OpInfo(argumentToSet), undefined);
+            dataLogTrace("m_setLocalQueue.append(inlineCall 3): DelayedSetLocal argumentToSet=", argumentToSet, ", value(undefined)=", undefined, ", ImmediateNakedSet");
             m_setLocalQueue.append(DelayedSetLocal { currentCodeOrigin(), argumentToSet, undefined, ImmediateNakedSet });
         }
 
@@ -2745,11 +2749,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             insertChecks(true);
             dataLogLn("bforward - after insertChecks()");
 
-            set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
-            set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+            set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)), ImmediateSetWithFlush);
+            set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)), ImmediateSetWithFlush);
             set(argThisArg, (argumentCountIncludingThis >= 3)
                 ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset))
-                : jsConstant(jsUndefined()));
+                : jsConstant(jsUndefined()),
+                ImmediateSetWithFlush);
             {
                 dataLogLn("bforward - before ToThis/ToObject/ToLength/IsCallable");
 
@@ -2766,6 +2771,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 exitOK();
                 Node* _callable = addToGraph(IsCallable, get(argCallback));
+
+                processSetLocalQueue();
                 addBranch(_callable, bbAllocations, bbThrowTypeError);
 
                 dataLogLn("bforward - after ToThis/ToObject/ToLength/IsCallable");
@@ -2780,7 +2787,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 OpInfo _info(m_graph.m_lazyJSValues.add(_errorString));
                 Node* _errorMessage = addToGraph(LazyJSConstant, _info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), _errorMessage);
+
+                processSetLocalQueue();
                 flushForTerminal();
+
                 dataLogLn("bforward - bbThrowTypeError END");
             }
 
@@ -2789,11 +2799,37 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 m_currentBlock = bbAllocations;
                 clearCaches();
 
-                Node* _arr = addToGraph(NewArrayWithSpecies, jsConstant(jsNumber(0)), get(obj));
-                set(arr, _arr);
-                set(k, jsConstant(jsNumber(0)));
-                set(to, jsConstant(jsNumber(0)));
+                Node* zero = jsConstant(jsNumber(0));
+
+                // auto bytecode = currentInstruction->as<OpNewArrayWithSpecies>();
+                // SpeculatedType prediction = getPrediction();
+                // auto& metadata = bytecode.metadata(codeBlock);
+                // ArrayAllocationProfile& profile = metadata.m_arrayAllocationProfile;
+                // ArrayMode arrayMode = getArrayMode(metadata.m_arrayProfile, Array::Read);
+                // NewArrayWithSpeciesData data { };
+                // data.arrayMode = arrayMode.asWord();
+                // data.indexingMode = profile.selectIndexingTypeConcurrently();
+                // set(bytecode.m_dst, addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(prediction), Edge(get(bytecode.m_length)), Edge(get(bytecode.m_array), KnownCellUse)));
+                // NEXT_OPCODE(op_new_array_with_species);
+
+                NewArrayWithSpeciesData data;
+                data.arrayMode = arrayMode.asWord();
+                data.indexingMode = profile->m_arrayAllocProfile.selectIndexingTypeConcurrently();
+                Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(obj), KnownCellUse));
+
+                // Node* _arr = addToGraph(NewArrayWithSpecies, zero, get(obj));
+                // _arr->child1() = Edge(_arr->child1().node(), KnownInt32Use);
+
+                set(arr, newArray);
+
+                // addToGraph(Phantom, Edge(zero, KnownInt32Use));
+
+                set(k, zero);
+                set(to, zero);
+
+                processSetLocalQueue();
                 addJumpTo(bbLoopHeader);
+
                 dataLogLn("bforward - bbAllocations END");
             }
 
@@ -2803,30 +2839,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 m_currentBlock = bbLoopHeader;
                 clearCaches();
 
-                // Node* kPhi = addToGraph(Phi);
-                // set(k, kPhi);
-
-                // Node* toPhi = addToGraph(Phi);
-                // set(to, toPhi);
-
-                // Node* arrPhi = addToGraph(Phi);
-                // set(arr, arrPhi);
-
-                // Node* objPhi = addToGraph(Phi);
-                // set(obj, objPhi);
-
-                // Node* lenPhi = addToGraph(Phi);
-                // set(len, lenPhi);
-
-                // Node* callbackPhi = addToGraph(Phi);
-                // set(argCallback, callbackPhi);
-
-                // Node* thisArgPhi = addToGraph(Phi);
-                // set(argThisArg, thisArgPhi);
-
                 exitOK();
                 Node* _compare = addToGraph(CompareGreaterEq, get(k), get(len));
+
+                processSetLocalQueue();
                 addBranch(_compare, bbLoopExitReturnA, bbLoopBodyHasProp);
+
                 dataLogLn("bforward - bbLoopHeader END");
             }
 
@@ -2836,7 +2854,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 clearCaches();
 
                 setResult(get(arr));
+
+                processSetLocalQueue();
                 addJumpTo(continuation);
+
                 dataLogLn("bforward - bbLoopExitReturnA END");
             }
 
@@ -2848,7 +2869,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
                 exitOK(); // for InByVal
                 set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
+
+                processSetLocalQueue();
                 addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
+
                 dataLogLn("bforward - bbLoopBodyHasProp END");
             }
 
@@ -2858,14 +2882,16 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 clearCaches();
 
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+
                 exitOK();
-                addVarArgChild(get(obj));
-                addVarArgChild(get(k));
+                addVarArgChild(Edge(get(obj), KnownCellUse));
+                addVarArgChild(Edge(get(k), KnownInt32Use));
                 addVarArgChild(nullptr);
                 Node* _kValue = addToGraph(Node::VarArg, GetByVal,
                     OpInfo(arrayMode2.asWord()),
                     OpInfo(profile->m_getByValValueProfile.m_prediction));
-                set(val, _kValue);
+                exitOK();
+                set(val, _kValue, ImmediateSetWithFlush);
                 Vector<Node*> _arguments;
                 _arguments.append(get(argThisArg)); // thisArg
                 _arguments.append(_kValue);
@@ -2896,8 +2922,12 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     profile->m_callbackResValueProfile.m_prediction,
                     nullptr);
                 dataLogLn("bforward - after handleCall");
+                exitOK();
+
+                processSetLocalQueue();
                 RELEASE_ASSERT(_terminality == NonTerminal); // TODO: could return DidNothing here perhaps
                 Node* _toBooleanResult = addToGraph(ToBoolean, get(scratch));
+
                 addBranch(_toBooleanResult, bbLoopBodySetProp, bbLoopBodyIncK);
                 dataLogLn("bforward - bbLoopBodyCheck END");
             }
@@ -2906,6 +2936,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 dataLogLn("bforward - bbLoopBodySetProp BEGIN");
                 m_currentBlock = bbLoopBodySetProp;
                 clearCaches();
+
+                exitOK();
 
                 ArrayMode _arrayMode = getArrayMode(Array::Write);
 
@@ -2922,7 +2954,14 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 UNUSED_VARIABLE(putByVal);
 
                 exitOK();
-                set(to, addToGraph(Inc, get(to)));
+
+                Node* one = jsConstant(jsNumber(1));
+                Node* inc = addToGraph(ArithAdd, get(to), one);
+                inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
+                inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
+                set(to, inc);
+
+                processSetLocalQueue();
                 addJumpTo(bbLoopBodyIncK);
                 dataLogLn("bforward - bbLoopBodySetProp END");
             }
@@ -2933,7 +2972,20 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 clearCaches();
 
                 exitOK();
-                set(k, addToGraph(Inc, get(k)));
+                // Node* gotK = get(k);
+                // gotK->child1() = Edge(gotK->child1().node(), KnownInt32Use);
+
+                // Node* inc = addToGraph(Inc, get(k));
+                // inc->child1() = Edge(inc->child1().node(), Int32Use);
+                // set(k, inc);
+
+                Node* one = jsConstant(jsNumber(1));
+                Node* inc = addToGraph(ArithAdd, get(k), one);
+                inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
+                inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
+                set(k, inc);
+
+                processSetLocalQueue();
                 addJumpTo(bbLoopHeader);
                 dataLogLn("bforward - bbLoopBodyIncK END");
             }
@@ -8932,6 +8984,7 @@ void ByteCodeParser::parseBlock(unsigned limit)
 
             for (const std::pair<VirtualRegister, Node*>& pair : localsToSet) {
                 DelayedSetLocal delayed { currentCodeOrigin(), pair.first, pair.second, ImmediateNakedSet };
+                dataLogTrace("m_setLocalQueue.append(op_catch): DelayedSetLocal dest=", pair.first, ", value=", pair.second, ", ImmediateNakedSet");
                 m_setLocalQueue.append(delayed);
             }
 

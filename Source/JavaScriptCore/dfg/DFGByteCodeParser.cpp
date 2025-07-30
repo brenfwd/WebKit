@@ -2708,7 +2708,6 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
         }
 
         case ArrayFilterIntrinsic: {
-
             if (argumentCountIncludingThis < 2)
                 return CallOptimizationResult::DidNothing;
 
@@ -2774,9 +2773,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             exitOK();
             insertChecks(true);
 
-            set(tmps.argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)), ImmediateSetWithFlush);
-            set(tmps.argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)), ImmediateSetWithFlush);
-            set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()), ImmediateSetWithFlush);
+            set(tmps.argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
+            set(tmps.argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
+            set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()));
+            processSetLocalQueue();
 
             {
                 exitOK();
@@ -2819,6 +2819,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 NewArrayWithSpeciesData data;
                 data.arrayMode = arrayMode.asWord();
                 data.indexingMode = profile->m_arrayAllocProfile.selectIndexingTypeConcurrently();
+                // TODO: is this *definitely* KnownCellUse?
                 Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(tmps.obj), KnownCellUse));
 
                 set(tmps.arr, newArray);

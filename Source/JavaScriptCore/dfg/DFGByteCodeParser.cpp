@@ -113,6 +113,20 @@ static constexpr bool verbose = true;
     dataLogIf(DFGByteCodeParserInternal::verbose && Options::verboseDFGBytecodeParsing(), __VA_ARGS__); \
 } while (false)
 
+#define JSC_TMP_HELPER_APPEND_COMMA(tmpName) tmpName,
+#define JSC_TMP_HELPER_DECLARE(tmpName) Operand tmpName = Operand::tmp(static_cast<unsigned>(TmpMap::tmpName));
+#define JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(forEachMacro) [&] ALWAYS_INLINE_LAMBDA {\
+    enum class TmpMap : unsigned { \
+        forEachMacro(JSC_TMP_HELPER_APPEND_COMMA) \
+        TMP_COUNT, \
+    }; \
+    ensureTmps(static_cast<unsigned>(TmpMap::TMP_COUNT)); \
+    struct { \
+        forEachMacro(JSC_TMP_HELPER_DECLARE) \
+    } tmps { }; \
+    return tmps; \
+}()
+
 // === ByteCodeParser ===
 //
 // This class is used to compile the dataflow graph from a CodeBlock.
@@ -2694,6 +2708,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
         }
 
         case ArrayFilterIntrinsic: {
+
             if (argumentCountIncludingThis < 2)
                 return CallOptimizationResult::DidNothing;
 
@@ -2742,55 +2757,47 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
             auto oldIndex = m_currentIndex;
 
-            dataLogLn("bforward - ArrayFilterIntrinsic #########################################################");
-
-            ensureTmps(10);
-            auto k = Operand::tmp(0);
-            auto to = Operand::tmp(1);
-            auto scratch = Operand::tmp(2);
-            auto obj = Operand::tmp(3);
-            auto len = Operand::tmp(4);
-            auto arr = Operand::tmp(5);
-            auto val = Operand::tmp(6);
-
-            auto argThis = Operand::tmp(7);
-            auto argCallback = Operand::tmp(8);
-            auto argThisArg = Operand::tmp(9);
+#define X(macro) \
+    macro(k) \
+    macro(to) \
+    macro(scratch) \
+    macro(obj) \
+    macro(len) \
+    macro(arr) \
+    macro(val) \
+    macro(argThis) \
+    macro(argCallback) \
+    macro(argThisArg)
+            auto tmps = JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(X);
+#undef X
 
             exitOK();
-            dataLogLn("bforward - before insertChecks()");
             insertChecks(true);
-            dataLogLn("bforward - after insertChecks()");
 
-            set(argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)), ImmediateSetWithFlush);
-            set(argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)), ImmediateSetWithFlush);
-            set(argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()), ImmediateSetWithFlush);
+            set(tmps.argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)), ImmediateSetWithFlush);
+            set(tmps.argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)), ImmediateSetWithFlush);
+            set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()), ImmediateSetWithFlush);
 
             {
-                dataLogLn("bforward - before ToThis/ToObject/ToLength/IsCallable");
-
                 exitOK();
-                Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(argThis));
+                Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
                 Node* toObjectResult = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), toThisResult);
 
                 exitOK();
-                set(obj, toObjectResult);
+                set(tmps.obj, toObjectResult);
 
                 exitOK();
                 Node* toLengthResult = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), toObjectResult);
-                set(len, toLengthResult);
+                set(tmps.len, toLengthResult);
 
                 exitOK();
-                Node* callableResult = addToGraph(IsCallable, get(argCallback));
+                Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
 
                 processSetLocalQueue();
                 addBranch(callableResult, bbAllocations, bbThrowTypeError);
-
-                dataLogLn("bforward - after ToThis/ToObject/ToLength/IsCallable");
             }
 
             {
-                dataLogLn("bforward - bbThrowTypeError BEGIN");
                 m_currentBlock = bbThrowTypeError;
                 clearCaches();
 
@@ -2801,12 +2808,9 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 processSetLocalQueue();
                 flushForTerminal();
-
-                dataLogLn("bforward - bbThrowTypeError END");
             }
 
             {
-                dataLogLn("bforward - bbAllocations BEGIN");
                 m_currentBlock = bbAllocations;
                 clearCaches();
 
@@ -2815,83 +2819,70 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 NewArrayWithSpeciesData data;
                 data.arrayMode = arrayMode.asWord();
                 data.indexingMode = profile->m_arrayAllocProfile.selectIndexingTypeConcurrently();
-                Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(obj), KnownCellUse));
+                Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(tmps.obj), KnownCellUse));
 
-                set(arr, newArray);
+                set(tmps.arr, newArray);
 
-                set(k, zero);
-                set(to, zero);
+                set(tmps.k, zero);
+                set(tmps.to, zero);
 
                 processSetLocalQueue();
                 addJumpTo(bbLoopHeader);
-
-                dataLogLn("bforward - bbAllocations END");
             }
 
-
             {
-                dataLogLn("bforward - bbLoopHeader BEGIN");
                 m_currentBlock = bbLoopHeader;
                 clearCaches();
 
                 exitOK();
-                Node* compareResult = addToGraph(CompareGreaterEq, get(k), get(len));
+                Node* compareResult = addToGraph(CompareGreaterEq, get(tmps.k), get(tmps.len));
 
                 processSetLocalQueue();
                 addBranch(compareResult, bbLoopExitReturnA, bbLoopBodyHasProp);
-
-                dataLogLn("bforward - bbLoopHeader END");
             }
 
             {
-                dataLogLn("bforward - bbLoopExitReturnA BEGIN");
                 m_currentBlock = bbLoopExitReturnA;
                 clearCaches();
 
-                setResult(get(arr));
+                setResult(get(tmps.arr));
 
                 processSetLocalQueue();
                 addJumpTo(continuation);
-
-                dataLogLn("bforward - bbLoopExitReturnA END");
             }
 
             {
-                dataLogLn("bforward - bbLoopBodyHasProp BEGIN");
                 m_currentBlock = bbLoopBodyHasProp;
                 clearCaches();
 
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
                 exitOK();
-                set(scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(obj), get(k)));
+                set(tmps.scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(tmps.obj), get(tmps.k)));
 
                 processSetLocalQueue();
-                addBranch(get(scratch), bbLoopBodyCheck, bbLoopBodyIncK);
-
-                dataLogLn("bforward - bbLoopBodyHasProp END");
+                addBranch(get(tmps.scratch), bbLoopBodyCheck, bbLoopBodyIncK);
             }
 
             {
-                dataLogLn("bforward - bbLoopBodyCheck BEGIN");
                 m_currentBlock = bbLoopBodyCheck;
                 clearCaches();
 
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
 
                 exitOK();
-                addVarArgChild(Edge(get(obj), KnownCellUse));
-                addVarArgChild(Edge(get(k), KnownInt32Use));
+                addVarArgChild(Edge(get(tmps.obj), KnownCellUse));
+                addVarArgChild(Edge(get(tmps.k), KnownInt32Use));
                 addVarArgChild(nullptr);
                 Node* kValue = addToGraph(Node::VarArg, GetByVal,
                     OpInfo(arrayMode2.asWord()),
                     OpInfo(profile->m_getByValValueProfile.m_prediction));
                 exitOK();
-                set(val, kValue, ImmediateSetWithFlush);
+                set(tmps.val, kValue, ImmediateSetWithFlush);
                 Vector<Node*> arguments;
-                arguments.append(get(argThisArg));
+                arguments.append(get(tmps.argThisArg));
                 arguments.append(kValue);
-                arguments.append(get(k));
-                arguments.append(get(obj));
+                arguments.append(get(tmps.k));
+                arguments.append(get(tmps.obj));
 
                 int newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
                 newRegisterOffset -= (argumentCountIncludingThis + 4 + 1); // args + return pc
@@ -2904,32 +2895,28 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 for (Node* argument : arguments)
                     set(virtualRegisterForArgumentIncludingThis(currentArgumentIndex++, newRegisterOffset), argument, ImmediateNakedSet);
 
-                dataLogLn("bforward - before handleCall");
                 Terminality callTerminality = handleCall(
-                    scratch,
+                    tmps.scratch,
                     Call,
                     InlineCallFrame::Call,
                     osrExitIndex, // TODO
-                    get(argCallback),
+                    get(tmps.argCallback),
                     4,
                     newRegisterOffset,
                     CallLinkStatus(), // TODO: pull this in from CallLinkInfo in profile
                     profile->m_callbackResValueProfile.m_prediction,
                     nullptr);
-                dataLogLn("bforward - after handleCall");
                 RELEASE_ASSERT(callTerminality == NonTerminal);
                 exitOK();
 
                 processSetLocalQueue();
 
-                Node* toBoolResult = addToGraph(ToBoolean, get(scratch));
+                Node* toBoolResult = addToGraph(ToBoolean, get(tmps.scratch));
 
                 addBranch(toBoolResult, bbLoopBodySetProp, bbLoopBodyIncK);
-                dataLogLn("bforward - bbLoopBodyCheck END");
             }
 
             {
-                dataLogLn("bforward - bbLoopBodySetProp BEGIN");
                 m_currentBlock = bbLoopBodySetProp;
                 clearCaches();
 
@@ -2937,59 +2924,49 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 ArrayMode writeArrayMode = getArrayMode(Array::Write);
 
-                addVarArgChild(get(arr));
-                addVarArgChild(get(to));
-                addVarArgChild(get(val));
+                addVarArgChild(get(tmps.arr));
+                addVarArgChild(get(tmps.to));
+                addVarArgChild(get(tmps.val));
                 addVarArgChild(nullptr); // Leave room for property storage.
                 addVarArgChild(nullptr); // Leave room for length.
-                // Node* putByVal = addToGraph(Node::VarArg, isDirect ? PutByValDirect : status.isMegamorphic() ? PutByValMegamorphic : PutByVal, OpInfo(arrayMode.asWord()), OpInfo(bytecode.m_ecmaMode));
 
                 exitOK();
                 Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(writeArrayMode.asWord()), OpInfo(ECMAMode::StrictMode));
-                // m_exitOK = false;
                 UNUSED_VARIABLE(putByVal);
 
                 exitOK();
 
                 Node* one = jsConstant(jsNumber(1));
-                Node* inc = addToGraph(ArithAdd, get(to), one);
+                Node* inc = addToGraph(ArithAdd, get(tmps.to), one);
                 inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
                 inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
-                set(to, inc);
+                set(tmps.to, inc);
 
                 processSetLocalQueue();
                 addJumpTo(bbLoopBodyIncK);
-                dataLogLn("bforward - bbLoopBodySetProp END");
             }
 
             {
-                dataLogLn("bforward - bbLoopBodyIncK BEGIN");
                 m_currentBlock = bbLoopBodyIncK;
                 clearCaches();
 
                 exitOK();
 
                 Node* one = jsConstant(jsNumber(1));
-                Node* inc = addToGraph(ArithAdd, get(k), one);
+                Node* inc = addToGraph(ArithAdd, get(tmps.k), one);
                 inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
                 inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
-                set(k, inc);
+                set(tmps.k, inc);
 
                 processSetLocalQueue();
                 addJumpTo(bbLoopHeader);
-                dataLogLn("bforward - bbLoopBodyIncK END");
             }
 
             {
-                dataLogLn("bforward - continuation BEGIN");
                 m_currentBlock = continuation;
                 clearCaches();
                 m_currentIndex = oldIndex;
-                dataLogLn("bforward - continuation END");
             }
-
-            dataLogLn("bforward - case end! return Inlined");
-
 
             return CallOptimizationResult::Inlined;
         }
@@ -11207,6 +11184,10 @@ bool parse(Graph& graph)
 }
 
 } } // namespace JSC::DFG
+
+#undef JSC_TMP_HELPER_APPEND_COMMA
+#undef JSC_TMP_HELPER_DECLARE
+#undef JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 

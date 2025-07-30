@@ -2778,24 +2778,22 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()));
             processSetLocalQueue();
 
-            {
-                exitOK();
-                Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
-                Node* toObjectResult = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), toThisResult);
+            exitOK();
+            Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
+            Node* toObjectResult = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), toThisResult);
 
-                exitOK();
-                set(tmps.obj, toObjectResult);
+            exitOK();
+            set(tmps.obj, toObjectResult);
 
-                exitOK();
-                Node* toLengthResult = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), toObjectResult);
-                set(tmps.len, toLengthResult);
+            exitOK();
+            Node* toLengthResult = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), toObjectResult);
+            set(tmps.len, toLengthResult);
 
-                exitOK();
-                Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
+            exitOK();
+            Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
 
-                processSetLocalQueue();
-                addBranch(callableResult, bbAllocations, bbThrowTypeError);
-            }
+            processSetLocalQueue();
+            addBranch(callableResult, bbAllocations, bbThrowTypeError);
 
             {
                 m_currentBlock = bbThrowTypeError;

@@ -2740,8 +2740,20 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             m_graph.watchpoints().addLazily(globalObject->arrayPrototypeChainIsSaneWatchpointSet());
 
             auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
+                ASSERT_WITH_MESSAGE(!m_exitOK, "emitting exitOK when it was already OK after emitting index: %u", m_currentBlock->index);
                 m_exitOK = true;
                 addToGraph(ExitOK);
+            };
+
+            auto defineBlock = [&](const char* blockName, BasicBlock* const block, auto functor) ALWAYS_INLINE_LAMBDA {
+                m_currentBlock = block;
+                clearCaches();
+                keepUsesOfCurrentInstructionAlive(m_currentInstruction, m_currentIndex.checkpoint());
+
+                functor();
+
+                UNUSED_PARAM(blockName);
+                ASSERT_WITH_MESSAGE(!m_setLocalQueue.size(), "setLocalQueue not empty on exit from block: \"%s\"", blockName);
             };
 
             BasicBlock* bbThrowTypeError = allocateUntargetableBlock();
@@ -2756,62 +2768,54 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
             auto oldIndex = m_currentIndex;
 
-#define X(macro) \
-    macro(k) \
-    macro(to) \
-    macro(scratch) \
-    macro(obj) \
-    macro(len) \
-    macro(arr) \
-    macro(val) \
-    macro(argThis) \
-    macro(argCallback) \
-    macro(argThisArg)
-            auto tmps = JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(X);
-#undef X
+#define ARRAY_FILTER_TMPS(tmp) \
+    tmp(k) \
+    tmp(to) \
+    tmp(scratch) \
+    tmp(obj) \
+    tmp(len) \
+    tmp(arr) \
+    tmp(val) \
+    tmp(argThis) \
+    tmp(argCallback) \
+    tmp(argThisArg)
+            auto tmps = JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(ARRAY_FILTER_TMPS);
+#undef ARRAY_FILTER_TMPS
 
-            exitOK();
             insertChecks(true);
 
             set(tmps.argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
             set(tmps.argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
             set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()));
             processSetLocalQueue();
-
             exitOK();
+
             Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
             Node* toObjectResult = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), toThisResult);
-
             exitOK();
             set(tmps.obj, toObjectResult);
-
+            // processSetLocalQueue();
             exitOK();
+
             Node* toLengthResult = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), toObjectResult);
             set(tmps.len, toLengthResult);
-
+            // processSetLocalQueue();
             exitOK();
+
             Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
 
             processSetLocalQueue();
             addBranch(callableResult, bbAllocations, bbThrowTypeError);
 
-            {
-                m_currentBlock = bbThrowTypeError;
-                clearCaches();
-
+            defineBlock("bbThrowTypeError", bbThrowTypeError, [&]{
                 LazyJSValue errorString = LazyJSValue::newString(m_graph, "Array.prototype.filter callback must be a function"_s);
                 OpInfo info(m_graph.m_lazyJSValues.add(errorString));
                 Node* errorMessage = addToGraph(LazyJSConstant, info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), errorMessage);
-
-                processSetLocalQueue();
                 flushForTerminal();
-            }
+            });
 
-            {
-                m_currentBlock = bbAllocations;
-                clearCaches();
-
+            defineBlock("bbAllocations", bbAllocations, [&]{
                 Node* zero = jsConstant(jsNumber(0));
 
                 NewArrayWithSpeciesData data;
@@ -2821,54 +2825,37 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 Node* newArray = addToGraph(NewArrayWithSpecies, OpInfo(data.asQuadWord()), OpInfo(ArrayUse), Edge(zero, KnownInt32Use), Edge(get(tmps.obj), KnownCellUse));
 
                 set(tmps.arr, newArray);
-
                 set(tmps.k, zero);
                 set(tmps.to, zero);
-
                 processSetLocalQueue();
+                exitOK();
+
                 addJumpTo(bbLoopHeader);
-            }
+            });
 
-            {
-                m_currentBlock = bbLoopHeader;
-                clearCaches();
-
-                exitOK();
+            defineBlock("bbLoopHeader", bbLoopHeader, [&]{
                 Node* compareResult = addToGraph(CompareGreaterEq, get(tmps.k), get(tmps.len));
-
-                processSetLocalQueue();
                 addBranch(compareResult, bbLoopExitReturnA, bbLoopBodyHasProp);
-            }
+            });
 
-            {
-                m_currentBlock = bbLoopExitReturnA;
-                clearCaches();
-
+            defineBlock("bbLoopExitReturnA", bbLoopExitReturnA, [&] {
                 setResult(get(tmps.arr));
-
                 processSetLocalQueue();
-                addJumpTo(continuation);
-            }
-
-            {
-                m_currentBlock = bbLoopBodyHasProp;
-                clearCaches();
-
-                ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
                 exitOK();
-                set(tmps.scratch, addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(tmps.obj), get(tmps.k)));
 
-                processSetLocalQueue();
-                addBranch(get(tmps.scratch), bbLoopBodyCheck, bbLoopBodyIncK);
-            }
+                addJumpTo(continuation); // TODO: do we need continuation block?
+            });
 
-            {
-                m_currentBlock = bbLoopBodyCheck;
-                clearCaches();
+            defineBlock("bbLoopBodyHasProp", bbLoopBodyHasProp, [&] {
+                ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
+                Node* inByValResult = addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(tmps.obj), get(tmps.k));
+                exitOK();
+                addBranch(inByValResult, bbLoopBodyCheck, bbLoopBodyIncK);
+            });
 
+            defineBlock("bbLoopBodyCheck", bbLoopBodyCheck, [&]{
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
 
-                exitOK();
                 addVarArgChild(Edge(get(tmps.obj), KnownCellUse));
                 addVarArgChild(Edge(get(tmps.k), KnownInt32Use));
                 addVarArgChild(nullptr);
@@ -2877,6 +2864,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     OpInfo(profile->m_getByValValueProfile.m_prediction));
                 exitOK();
                 set(tmps.val, kValue, ImmediateSetWithFlush);
+
                 Vector<Node*> arguments;
                 arguments.append(get(tmps.argThisArg));
                 arguments.append(kValue);
@@ -2893,6 +2881,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 unsigned currentArgumentIndex = 0;
                 for (Node* argument : arguments)
                     set(virtualRegisterForArgumentIncludingThis(currentArgumentIndex++, newRegisterOffset), argument, ImmediateNakedSet);
+
+                exitOK();
 
                 Terminality callTerminality = handleCall(
                     tmps.scratch,
@@ -2911,16 +2901,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 processSetLocalQueue();
 
                 Node* toBoolResult = addToGraph(ToBoolean, get(tmps.scratch));
-
                 addBranch(toBoolResult, bbLoopBodySetProp, bbLoopBodyIncK);
-            }
+            });
 
-            {
-                m_currentBlock = bbLoopBodySetProp;
-                clearCaches();
-
-                exitOK();
-
+            defineBlock("bbLoopBodySetProp", bbLoopBodySetProp, [&] {
                 ArrayMode writeArrayMode = getArrayMode(Array::Write);
 
                 addVarArgChild(get(tmps.arr));
@@ -2929,10 +2913,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 addVarArgChild(nullptr); // Leave room for property storage.
                 addVarArgChild(nullptr); // Leave room for length.
 
-                exitOK();
                 Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(writeArrayMode.asWord()), OpInfo(ECMAMode::StrictMode));
                 UNUSED_VARIABLE(putByVal);
-
                 exitOK();
 
                 Node* one = jsConstant(jsNumber(1));
@@ -2942,15 +2924,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 set(tmps.to, inc);
 
                 processSetLocalQueue();
-                addJumpTo(bbLoopBodyIncK);
-            }
-
-            {
-                m_currentBlock = bbLoopBodyIncK;
-                clearCaches();
-
                 exitOK();
+                addJumpTo(bbLoopBodyIncK);
+            });
 
+            defineBlock("bbLoopBodyIncK", bbLoopBodyIncK, [&] {
                 Node* one = jsConstant(jsNumber(1));
                 Node* inc = addToGraph(ArithAdd, get(tmps.k), one);
                 inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
@@ -2959,13 +2937,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
 
                 processSetLocalQueue();
                 addJumpTo(bbLoopHeader);
-            }
+            });
 
-            {
-                m_currentBlock = continuation;
-                clearCaches();
+            defineBlock("continuation", continuation, [&] {
                 m_currentIndex = oldIndex;
-            }
+            });
 
             return CallOptimizationResult::Inlined;
         }

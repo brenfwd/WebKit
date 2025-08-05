@@ -51,7 +51,8 @@ public:
         ASSERT(*this);
     }
 
-    static constexpr uint32_t numberOfCheckpoints = 4;
+    static constexpr uint32_t numberOfCheckpoints = 16;
+    // TODO: static assert that there are enough bits for all possible offsets
     static_assert(hasOneBitSet(numberOfCheckpoints), "numberOfCheckpoints should be a power of 2");
     static constexpr uint32_t checkpointMask = numberOfCheckpoints - 1;
     static constexpr uint32_t checkpointShift = WTF::getMSBSetConstexpr(numberOfCheckpoints);

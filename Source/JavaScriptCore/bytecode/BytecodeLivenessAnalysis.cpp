@@ -177,7 +177,7 @@ WTF::BitSet<maxNumCheckpointTmps> tmpLivenessForCheckpoint(const CodeBlock& code
     if (!checkpoint)
         return result;
 
-    switch (codeBlock.instructions().at(bytecodeIndex)->opcodeID()) {
+    switch (auto opcode = codeBlock.instructions().at(bytecodeIndex)->opcodeID(); opcode) {
     case op_call_varargs:
     case op_tail_call_varargs:
     case op_construct_varargs:
@@ -199,7 +199,14 @@ WTF::BitSet<maxNumCheckpointTmps> tmpLivenessForCheckpoint(const CodeBlock& code
     case op_instanceof: {
         return result;
     }
+    case op_tail_call: {
+        constexpr unsigned arrayFilterNumTmps = 10; // TODO: from shared location
+        for (unsigned i = 0; i < arrayFilterNumTmps; i++)
+            result.set(i);
+        return result;
+    }
     default:
+        dataLogLn("bforward - fell off end of tmpLivenessForCheckpoint with opcode: ", opcode);
         break;
     }
     RELEASE_ASSERT_NOT_REACHED();

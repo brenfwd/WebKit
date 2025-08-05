@@ -340,6 +340,20 @@ private:
     BytecodeIndex nextOpcodeIndex() const { return BytecodeIndex(m_currentIndex.offset() + m_currentInstruction->size()); }
     BytecodeIndex nextCheckpoint() const { return m_currentIndex.withCheckpoint(m_currentIndex.checkpoint() + 1); }
 
+    BytecodeIndex setCheckpoint(const Checkpoint checkpoint)
+    {
+        m_currentIndex = m_currentIndex.withCheckpoint(checkpoint);
+        m_exitOK = true;
+        processSetLocalQueue();
+        return m_currentIndex;
+    }
+
+    BytecodeIndex setCheckpoint(const BytecodeIndex bytecodeIndex)
+    {
+        ASSERT(bytecodeIndex.offset() == m_currentIndex.offset());
+        return setCheckpoint(bytecodeIndex.checkpoint());
+    }
+
     BytecodeIndex progressToNextCheckpoint()
     {
         m_currentIndex = nextCheckpoint();
@@ -2739,11 +2753,11 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             m_graph.watchpoints().addLazily(globalObject->havingABadTimeWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->arrayPrototypeChainIsSaneWatchpointSet());
 
-            auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
-                ASSERT_WITH_MESSAGE(!m_exitOK, "emitting exitOK when it was already OK after emitting index: %u", m_currentBlock->index);
-                m_exitOK = true;
-                addToGraph(ExitOK);
-            };
+            // auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
+            //     ASSERT_WITH_MESSAGE(!m_exitOK, "emitting exitOK when it was already OK after emitting index: %u", m_currentBlock->index);
+            //     m_exitOK = true;
+            //     addToGraph(ExitOK);
+            // };
 
             auto defineBlock = [&](const char* blockName, BasicBlock* const block, auto functor) ALWAYS_INLINE_LAMBDA {
                 m_currentBlock = block;
@@ -2782,25 +2796,50 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             auto tmps = JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(ARRAY_FILTER_TMPS);
 #undef ARRAY_FILTER_TMPS
 
+            enum class ArrayProtoFilterCheckpoint : Checkpoint {
+                EntryDefault = 0,
+                EntryAfterSetLocals,
+                EntryAfterToObjectThis,
+                EntryAfterToLength,
+                EntryAfterToLengthSet,
+                AllocationsAfterNewArray,
+                // ExitReturnAfterSetResult,
+                LoopBodyHasPropAfterInByVal,
+                LoopBodyCheckAfterGetByVal,
+                LoopBodyCheckAfterPrepareCall,
+                LoopBodyCheckAfterHandleCall,
+                LoopBodySetPropAfterPutByVal,
+                LoopBodySetPropAfterArithAdd,
+            };
+#define CHECKPOINT(checkpointName) setCheckpoint(static_cast<Checkpoint>(ArrayProtoFilterCheckpoint::checkpointName))
+
             insertChecks(true);
 
             set(tmps.argThis, get(virtualRegisterForArgumentIncludingThis(0, registerOffset)));
             set(tmps.argCallback, get(virtualRegisterForArgumentIncludingThis(1, registerOffset)));
             set(tmps.argThisArg, (argumentCountIncludingThis >= 3) ? get(virtualRegisterForArgumentIncludingThis(2, registerOffset)) : jsConstant(jsUndefined()));
             processSetLocalQueue();
-            exitOK();
+
+            ASSERT(!m_currentIndex.checkpoint());
+            CHECKPOINT(EntryAfterSetLocals);
 
             Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
             Node* toObjectResult = addToGraph(ToObject, OpInfo(UINT32_MAX /* TODO: errorStringIndex? */), OpInfo(profile->m_toObjectValueProfile.m_prediction), toThisResult);
-            exitOK();
+            // exitOK(); // not needed?
             set(tmps.obj, toObjectResult);
-            // processSetLocalQueue();
-            exitOK();
+            // processSetLocalQueue(); // uncommenting this causes DFG to fail
+            // exitOK();
+            CHECKPOINT(EntryAfterToObjectThis);
+            // progressToNextCheckpoint(); // 1 -> 2
 
             Node* toLengthResult = addToGraph(ToLength, OpInfo(0), OpInfo(profile->m_toLengthValueProfile.m_prediction), toObjectResult);
+            CHECKPOINT(EntryAfterToLength);
+            addToGraph(Check, Edge(toLengthResult, Int32Use));
             set(tmps.len, toLengthResult);
             // processSetLocalQueue();
-            exitOK();
+            // exitOK();
+            CHECKPOINT(EntryAfterToLengthSet);
+            // progressToNextCheckpoint(); // 2 -> 3
 
             Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
 
@@ -2812,7 +2851,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 OpInfo info(m_graph.m_lazyJSValues.add(errorString));
                 Node* errorMessage = addToGraph(LazyJSConstant, info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), errorMessage);
-                flushForTerminal();
+                // flushForTerminal();
             });
 
             defineBlock("bbAllocations", bbAllocations, [&]{
@@ -2828,28 +2867,31 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 set(tmps.k, zero);
                 set(tmps.to, zero);
                 processSetLocalQueue();
-                exitOK();
+
+                // exitOK();
+                // preLoopHeaderCheckpoint = progressToNextCheckpoint(); // 3 -> 4
+                CHECKPOINT(AllocationsAfterNewArray);
 
                 addJumpTo(bbLoopHeader);
             });
 
+            auto getK = [&] ALWAYS_INLINE_LAMBDA { return Edge(get(tmps.k), KnownInt32Use); };
+            auto getTo = [&] ALWAYS_INLINE_LAMBDA { return Edge(get(tmps.to), KnownInt32Use); };
+            auto getLen = [&] ALWAYS_INLINE_LAMBDA { return Edge(get(tmps.len), KnownInt32Use); };
+
             defineBlock("bbLoopHeader", bbLoopHeader, [&]{
-                Node* compareResult = addToGraph(CompareGreaterEq, get(tmps.k), get(tmps.len));
+                Node* compareResult = addToGraph(CompareGreaterEq, getK(), getLen());
+                ASSERT(m_exitOK);
                 addBranch(compareResult, bbLoopExitReturnA, bbLoopBodyHasProp);
             });
 
-            defineBlock("bbLoopExitReturnA", bbLoopExitReturnA, [&] {
-                setResult(get(tmps.arr));
-                processSetLocalQueue();
-                exitOK();
-
-                addJumpTo(continuation); // TODO: do we need continuation block?
-            });
-
             defineBlock("bbLoopBodyHasProp", bbLoopBodyHasProp, [&] {
+                // m_exitOK = true; // we are coming from bbLoopHeader which is exitOK.
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
-                Node* inByValResult = addToGraph(InByVal, OpInfo(arrayMode2.asWord()), get(tmps.obj), get(tmps.k));
-                exitOK();
+                Node* inByValResult = addToGraph(InByVal, OpInfo(arrayMode2.asWord()), Edge(get(tmps.obj)), getK());
+                // exitOK();
+                // progressToNextCheckpoint(); // 4 -> 5
+                CHECKPOINT(LoopBodyHasPropAfterInByVal);
                 addBranch(inByValResult, bbLoopBodyCheck, bbLoopBodyIncK);
             });
 
@@ -2857,18 +2899,21 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 ArrayMode arrayMode2 = getArrayMode(Array::Read); // TODO: from profile
 
                 addVarArgChild(Edge(get(tmps.obj), KnownCellUse));
-                addVarArgChild(Edge(get(tmps.k), KnownInt32Use));
+                addVarArgChild(getK());
                 addVarArgChild(nullptr);
                 Node* kValue = addToGraph(Node::VarArg, GetByVal,
                     OpInfo(arrayMode2.asWord()),
                     OpInfo(profile->m_getByValValueProfile.m_prediction));
-                exitOK();
+                // exitOK();
+                // progressToNextCheckpoint(); // 5 -> 6
+                CHECKPOINT(LoopBodyCheckAfterGetByVal);
+
                 set(tmps.val, kValue, ImmediateSetWithFlush);
 
                 Vector<Node*> arguments;
                 arguments.append(get(tmps.argThisArg));
                 arguments.append(kValue);
-                arguments.append(get(tmps.k));
+                arguments.append(get(tmps.k)); // can't be getK() here since arguments is Node*
                 arguments.append(get(tmps.obj));
 
                 int newRegisterOffset = virtualRegisterForLocal(m_inlineStackTop->m_profiledBlock->numCalleeLocals() - 1).offset();
@@ -2882,7 +2927,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 for (Node* argument : arguments)
                     set(virtualRegisterForArgumentIncludingThis(currentArgumentIndex++, newRegisterOffset), argument, ImmediateNakedSet);
 
-                exitOK();
+                // exitOK();
+                CHECKPOINT(LoopBodyCheckAfterPrepareCall);
 
                 Terminality callTerminality = handleCall(
                     tmps.scratch,
@@ -2896,7 +2942,8 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                     profile->m_callbackResValueProfile.m_prediction,
                     nullptr);
                 RELEASE_ASSERT(callTerminality == NonTerminal);
-                exitOK();
+                // exitOK();
+                CHECKPOINT(LoopBodyCheckAfterHandleCall);
 
                 processSetLocalQueue();
 
@@ -2908,35 +2955,48 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 ArrayMode writeArrayMode = getArrayMode(Array::Write);
 
                 addVarArgChild(get(tmps.arr));
-                addVarArgChild(get(tmps.to));
+                addVarArgChild(getTo());
                 addVarArgChild(get(tmps.val));
                 addVarArgChild(nullptr); // Leave room for property storage.
                 addVarArgChild(nullptr); // Leave room for length.
 
                 Node* putByVal = addToGraph(Node::VarArg, PutByVal, OpInfo(writeArrayMode.asWord()), OpInfo(ECMAMode::StrictMode));
                 UNUSED_VARIABLE(putByVal);
-                exitOK();
+                // exitOK();
+                CHECKPOINT(LoopBodySetPropAfterPutByVal);
 
                 Node* one = jsConstant(jsNumber(1));
-                Node* inc = addToGraph(ArithAdd, get(tmps.to), one);
-                inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
-                inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
+                Node* inc = addToGraph(ArithAdd, getTo(), Edge(one, KnownInt32Use));
+                // inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
+                // inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
                 set(tmps.to, inc);
 
                 processSetLocalQueue();
-                exitOK();
+                // exitOK();
+                CHECKPOINT(LoopBodySetPropAfterArithAdd);
+
                 addJumpTo(bbLoopBodyIncK);
             });
 
             defineBlock("bbLoopBodyIncK", bbLoopBodyIncK, [&] {
                 Node* one = jsConstant(jsNumber(1));
-                Node* inc = addToGraph(ArithAdd, get(tmps.k), one);
-                inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
-                inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
+                Node* inc = addToGraph(ArithAdd, getK(), Edge(one, KnownInt32Use));
+//                 inc->child1() = Edge(inc->child1().node(), KnownInt32Use);
+//                 inc->child2() = Edge(inc->child2().node(), KnownInt32Use);
                 set(tmps.k, inc);
 
                 processSetLocalQueue();
+
+                CHECKPOINT(AllocationsAfterNewArray); // back edge is equivalent to this checkpoint
                 addJumpTo(bbLoopHeader);
+            });
+
+            defineBlock("bbLoopExitReturnA", bbLoopExitReturnA, [&] {
+                setResult(get(tmps.arr));
+                processSetLocalQueue();
+                // exitOK(); // is this needed?
+
+                addJumpTo(continuation); // TODO: do we need continuation block?
             });
 
             defineBlock("continuation", continuation, [&] {
@@ -2944,6 +3004,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             });
 
             return CallOptimizationResult::Inlined;
+#undef CHECKPOINT
         }
 
         case ArrayPushIntrinsic: {

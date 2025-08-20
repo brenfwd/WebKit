@@ -113,19 +113,20 @@ static constexpr bool verbose = true;
     dataLogIf(DFGByteCodeParserInternal::verbose && Options::verboseDFGBytecodeParsing(), __VA_ARGS__); \
 } while (false)
 
-#define JSC_TMP_HELPER_APPEND_COMMA(tmpName) tmpName,
-#define JSC_TMP_HELPER_DECLARE(tmpName) Operand tmpName = Operand::tmp(static_cast<unsigned>(TmpMap::tmpName));
+#define JSC_TMP_HELPER_DECLARE(opClass, tmpName) Operand tmpName = Operand::tmp(opClass::tmpName);
+#define JSC_TMP_HELPER_APPEND_COMMA(opClass, tmpName) tmpName,
 #define JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(forEachMacro) [&] ALWAYS_INLINE_LAMBDA {\
     enum class TmpMap : unsigned { \
         forEachMacro(JSC_TMP_HELPER_APPEND_COMMA) \
         TMP_COUNT, \
     }; \
-    ensureTmps(static_cast<unsigned>(TmpMap::TMP_COUNT)); \
+    ensureTmps(static_cast<unsigned>(TmpMap::TMP_COUNT) * 2U); \
     struct { \
         forEachMacro(JSC_TMP_HELPER_DECLARE) \
     } tmps { }; \
     return tmps; \
 }()
+// TODO: ensureTmps above is set to *2U for testing
 
 // === ByteCodeParser ===
 //
@@ -1848,6 +1849,7 @@ void ByteCodeParser::inlineCall(Node* callTargetNode, Operand result, CallVarian
         inlineCallFrameStart.toLocal() + 1 +
         CallFrame::headerSizeInRegisters + codeBlock->numCalleeLocals());
     
+
     ensureTmps((m_inlineStackTop->m_inlineCallFrame ? m_inlineStackTop->m_inlineCallFrame->tmpOffset : 0) + m_inlineStackTop->m_codeBlock->numTmps() + codeBlock->numTmps());
 
     size_t argumentPositionStart = m_graph.m_argumentPositions.size();
@@ -2740,6 +2742,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             if (!profile)
                 return CallOptimizationResult::DidNothing;
 
+            // Don't keep trying to tier up when we have check failures
+            if (m_inlineStackTop->m_exitProfile.hasExitSite(m_currentIndex, BadType))
+                return CallOptimizationResult::DidNothing;
+
             profile->updateValueProfiles(m_codeBlock->m_lock);
 
             JSGlobalObject* globalObject = m_graph.globalObjectFor(currentNodeOrigin().semantic);
@@ -2752,12 +2758,6 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             m_graph.watchpoints().addLazily(globalObject->arraySpeciesWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->havingABadTimeWatchpointSet());
             m_graph.watchpoints().addLazily(globalObject->arrayPrototypeChainIsSaneWatchpointSet());
-
-            // auto exitOK = [&] ALWAYS_INLINE_LAMBDA {
-            //     ASSERT_WITH_MESSAGE(!m_exitOK, "emitting exitOK when it was already OK after emitting index: %u", m_currentBlock->index);
-            //     m_exitOK = true;
-            //     addToGraph(ExitOK);
-            // };
 
             auto defineBlock = [&](const char* blockName, BasicBlock* const block, auto functor) ALWAYS_INLINE_LAMBDA {
                 m_currentBlock = block;
@@ -2783,16 +2783,16 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             auto oldIndex = m_currentIndex;
 
 #define ARRAY_FILTER_TMPS(tmp) \
-    tmp(k) \
-    tmp(to) \
-    tmp(scratch) \
-    tmp(obj) \
-    tmp(len) \
-    tmp(arr) \
-    tmp(val) \
-    tmp(argThis) \
-    tmp(argCallback) \
-    tmp(argThisArg)
+    tmp(OpCall, k) \
+    tmp(OpCall, to) \
+    tmp(OpCall, scratch) \
+    tmp(OpCall, obj) \
+    tmp(OpCall, len) \
+    tmp(OpCall, arr) \
+    tmp(OpCall, val) \
+    tmp(OpCall, argThis) \
+    tmp(OpCall, argCallback) \
+    tmp(OpCall, argThisArg)
             auto tmps = JSC_BUILTIN_DEFINE_AND_ENSURE_TMPS(ARRAY_FILTER_TMPS);
 #undef ARRAY_FILTER_TMPS
 
@@ -2821,6 +2821,10 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             processSetLocalQueue();
 
             ASSERT(!m_currentIndex.checkpoint());
+            // addToGraph(ExitOK); // TODO: technically there should be a checkpoint here
+            // m_exitOK = true;
+            // addToGraph(Check, Edge(get(tmps.argCallback), FunctionUse));
+
             CHECKPOINT(EntryAfterSetLocals);
 
             Node* toThisResult = addToGraph(ToThis, OpInfo(ECMAMode::strict()), OpInfo(profile->m_thisValueProfile.m_prediction), get(tmps.argThis));
@@ -2841,6 +2845,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
             CHECKPOINT(EntryAfterToLengthSet);
             // progressToNextCheckpoint(); // 2 -> 3
 
+
             Node* callableResult = addToGraph(IsCallable, get(tmps.argCallback));
 
             processSetLocalQueue();
@@ -2851,7 +2856,7 @@ auto ByteCodeParser::handleIntrinsicCall(Node* callee, Operand resultOperand, Ca
                 OpInfo info(m_graph.m_lazyJSValues.add(errorString));
                 Node* errorMessage = addToGraph(LazyJSConstant, info);
                 addToGraph(ThrowStaticError, OpInfo(ErrorType::TypeError), errorMessage);
-                // flushForTerminal();
+                flushForTerminal();
             });
 
             defineBlock("bbAllocations", bbAllocations, [&]{

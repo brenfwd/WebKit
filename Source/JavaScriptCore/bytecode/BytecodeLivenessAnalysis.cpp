@@ -199,7 +199,7 @@ WTF::BitSet<maxNumCheckpointTmps> tmpLivenessForCheckpoint(const CodeBlock& code
     case op_instanceof: {
         return result;
     }
-    case op_tail_call: {
+    case op_call: {
         constexpr unsigned arrayFilterNumTmps = 10; // TODO: from shared location
         for (unsigned i = 0; i < arrayFilterNumTmps; i++)
             result.set(i);

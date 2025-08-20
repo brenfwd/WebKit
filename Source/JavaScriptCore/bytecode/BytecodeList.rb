@@ -125,6 +125,54 @@ op :call_varargs,
         makeCall: nil,
     }
 
+# moved here since all bytecodes with checkpoints must be defined together
+op :call,
+    args: {
+        dst: VirtualRegister,
+        callee: VirtualRegister,
+        argc: unsigned,
+        argv: unsigned,
+        valueProfile: unsigned,
+        unused1: unsigned,
+        unused2: unsigned,
+        unused3: unsigned,
+        unused4: unsigned,
+        unused5: unsigned,
+    },
+    metadata: {
+        callLinkInfo: DataOnlyCallLinkInfo,
+        arrayProfile: ArrayProfile,
+    },
+    tmps: {
+        k: unsigned,
+        to: unsigned,
+        scratch: JSValue,
+        obj: JSValue,
+        len: unsigned,
+        arr: JSValue,
+        val: JSValue,
+        argThis: JSValue,
+        argCallback: JSValue,
+        argThisArg: JSValue,
+    },
+    checkpoints: {
+        entryAfterSetLocals: nil,
+        entryAfterToObjectThis: nil,
+        entryAfterToLength: nil,
+        entryAfterToLengthSet: nil,
+        #
+        allocAfterNewArray: nil,
+        #
+        loopBodyhasPropAfterInByVal: nil,
+        #
+        loopBodyCheckAfterGetByVal: nil,
+        loopBodyCheckAfterPrepareCall: nil,
+        loopBodyCheckAfterHandleCall: nil,
+        #
+        loopBodySetPropAfterPutByVal: nil,
+        loopBodySetPropAfterArithAdd: nil,
+    }
+
 # Semantically, this is nextResult = next.@call(iterator); done = nextResult.done; value = done ? undefined : nextResult.value;
 op :iterator_next,
     args: {
@@ -304,18 +352,6 @@ op :super_construct,
         cachedCallee: WriteBarrier[JSCell],
     }
 
-op :tail_call,
-    args: {
-        dst: VirtualRegister,
-        callee: VirtualRegister,
-        argc: unsigned,
-        argv: unsigned,
-    },
-    metadata: {
-        callLinkInfo: DataOnlyCallLinkInfo,
-        arrayProfile: ArrayProfile,
-    }
-
 op :call_direct_eval,
     args: {
         dst: VirtualRegister,
@@ -450,13 +486,14 @@ op :new_array_with_species,
     }
 
 # op_call variations
-op :call,
+
+
+op :tail_call,
     args: {
         dst: VirtualRegister,
         callee: VirtualRegister,
         argc: unsigned,
         argv: unsigned,
-        valueProfile: unsigned,
     },
     metadata: {
         callLinkInfo: DataOnlyCallLinkInfo,

@@ -504,9 +504,15 @@ void computeDefsForBytecodeIndexImpl(unsigned numVars, const JSInstruction* inst
         return;
     }
 
+    case op_call: {
+        auto bytecode = instruction->as<OpCall>();
+        functor(bytecode.m_dst);
+        return;
+    }
+
     DEFS(OpTailCallForwardArguments, dst)
     DEFS(OpGetFromScope, dst)
-    DEFS(OpCall, dst)
+    // DEFS(OpCall, dst)
     DEFS(OpTailCall, dst)
     DEFS(OpCallDirectEval, dst)
     DEFS(OpConstruct, dst)

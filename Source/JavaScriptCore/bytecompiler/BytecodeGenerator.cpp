@@ -3735,7 +3735,7 @@ RegisterID* BytecodeGenerator::emitCall(RegisterID* dst, RegisterID* func, Expec
     } else if constexpr (opcodeID == op_tail_call)
         CallOp::emit(this, dst, func, callArguments.argumentCountIncludingThis(), callArguments.stackOffset());
     else
-        CallOp::emit(this, dst, func, callArguments.argumentCountIncludingThis(), callArguments.stackOffset(), nextValueProfileIndex());
+        CallOp::emit(this, dst, func, callArguments.argumentCountIncludingThis(), callArguments.stackOffset(), nextValueProfileIndex(), 0, 0, 0, 0, 0);
     
     if (expectedFunction != NoExpectedFunction)
         emitLabel(done.get());
